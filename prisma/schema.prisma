@@ -1,0 +1,187 @@
+// Reporta Ya — Prisma Schema
+// Generador: prisma-client (Prisma v7)
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  // Ojo: En Prisma 7 la URL NO va aquí, se lee desde prisma.config.ts
+}
+
+// ─── Enumeraciones ─────────────────────────────────────────────────────────────
+
+enum Rol {
+  REPORTANTE
+  RESPONSABLE
+  SUPERVISOR
+}
+
+// ─── Modelos de Configuración Dinámica ─────────────────────────────────────────
+
+model ConfigSistema {
+  id          String   @id @default(uuid())
+  clave       String   @unique
+  valor       String
+  descripcion String?
+  updatedAt   DateTime @updatedAt
+
+  @@map("config_sistema")
+}
+
+model ConfigCategoria {
+  id          String    @id @default(uuid())
+  nombre      String    @unique
+  descripcion String?
+  color       String?   @default("#000000")
+  icono       String?
+  activo      Boolean   @default(true)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  reportes    Reporte[]
+
+  @@map("config_categorias")
+}
+
+model ConfigEstado {
+  id        String   @id @default(uuid())
+  nombre    String   @unique
+  color     String?  @default("#000000")
+  esFinal   Boolean  @default(false)
+  orden     Int      @default(0)
+  activo    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  reportes        Reporte[]
+  
+  // CORRECCIÓN PRISMA 7: Nombres de relación explícitos emparejados
+  auditLogsNuevos AuditLog[] @relation("RelacionEstadoNuevo")
+  auditLogsViejos AuditLog[] @relation("RelacionEstadoAnterior")
+
+  @@map("config_estados")
+}
+
+model ConfigPrioridad {
+  id        String   @id @default(uuid())
+  nombre    String   @unique
+  color     String?  @default("#000000")
+  nivel     Int      @default(0)
+  activo    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  reportes  Reporte[]
+
+  @@map("config_prioridades")
+}
+
+model LogAccion {
+  id        String   @id @default(uuid())
+  usuarioId String?
+  usuario   Usuario? @relation(fields: [usuarioId], references: [id])
+  accion    String
+  entidad   String
+  entidadId String
+  detalles  Json?
+  fecha     DateTime @default(now())
+
+  @@map("logs_acciones")
+}
+
+// ─── Modelos de Negocio ────────────────────────────────────────────────────────
+
+model Usuario {
+  id           String             @id @default(uuid())
+  email        String             @unique
+  password     String
+  rol          Rol                @default(REPORTANTE)
+  pushToken    String?
+  createdAt    DateTime           @default(now())
+  updatedAt    DateTime           @updatedAt
+
+  reportes     Reporte[]
+  comunicados  Comunicado[]
+  auditLogs    AuditLog[]
+  logsAcciones LogAccion[]
+  puntos       PuntosCiudadanos[]
+
+  @@map("usuarios")
+}
+
+model Reporte {
+  id                   String          @id @default(uuid())
+  zona                 String?
+  comentario           String?
+  fotoUrl              String?
+  audioUrl             String?
+  transcripcionVoz     String?
+  validadoCiudadano    Boolean         @default(true)
+  latitud              Float
+  longitud             Float
+  fechaCreacion        DateTime        @default(now())
+  updatedAt            DateTime        @updatedAt
+  comentarioResolucion String?
+  fotoEvidenciaUrl     String?
+  sincronizadoEn       DateTime?
+
+  // Relaciones con Configuración
+  categoriaId  String
+  categoria    ConfigCategoria @relation(fields: [categoriaId], references: [id])
+  estadoId     String
+  estado       ConfigEstado    @relation(fields: [estadoId], references: [id])
+  prioridadId  String
+  prioridad    ConfigPrioridad @relation(fields: [prioridadId], references: [id])
+
+  reportanteId String?
+  reportante   Usuario?        @relation(fields: [reportanteId], references: [id])
+
+  auditLogs    AuditLog[]
+
+  @@map("reportes")
+}
+
+model PuntosCiudadanos {
+  id        String   @id @default(uuid())
+  usuarioId String
+  usuario   Usuario  @relation(fields: [usuarioId], references: [id])
+  puntos    Int
+  motivo    String
+  fecha     DateTime @default(now())
+
+  @@map("puntos_ciudadanos")
+}
+
+model AuditLog {
+  id               String        @id @default(uuid())
+  reporteId        String
+  reporte          Reporte       @relation(fields: [reporteId], references: [id])
+  usuarioId        String?
+  usuario          Usuario?      @relation(fields: [usuarioId], references: [id])
+  
+  // Ambas relaciones ahora coinciden milimétricamente con ConfigEstado
+  estadoAnteriorId String?
+  estadoAnterior   ConfigEstado? @relation("RelacionEstadoAnterior", fields: [estadoAnteriorId], references: [id])
+  
+  estadoNuevoId    String
+  estadoNuevo      ConfigEstado  @relation("RelacionEstadoNuevo", fields: [estadoNuevoId], references: [id])
+  
+  fecha            DateTime      @default(now())
+  comentario       String?
+
+  @@map("audit_logs")
+}
+
+model Comunicado {
+  id                  String   @id @default(uuid())
+  mensaje             String
+  fechaPublicacion    DateTime @default(now())
+  duracionRestriccion Int?
+
+  responsableId       String
+  responsable         Usuario  @relation(fields: [responsableId], references: [id])
+
+  @@map("comunicados")
+}
