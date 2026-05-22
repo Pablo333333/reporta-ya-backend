@@ -15,7 +15,7 @@ export class ComunicadosController {
 
   // POST /comunicados — Solo RESPONSABLE (SUPERVISOR es solo lectura)
   @Post()
-  @Roles(Rol.RESPONSABLE)
+  @Roles('RESPONSABLE')
   create(
     @Body() dto: CreateComunicadoDto,
     @CurrentUser() user: JwtPayload,

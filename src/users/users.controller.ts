@@ -14,13 +14,13 @@ export class UsersController {
   constructor(private readonly usersService: UsersService) {}
 
   @Get()
-  @Roles(Rol.SUPERVISOR)
+  @Roles('SUPERVISOR')
   findAll() {
     return this.usersService.findAll();
   }
 
   @Get(':id')
-  @Roles(Rol.SUPERVISOR, Rol.RESPONSABLE)
+  @Roles('SUPERVISOR', 'RESPONSABLE')
   findOne(@Param('id') id: string) {
     return this.usersService.findOne(id);
   }

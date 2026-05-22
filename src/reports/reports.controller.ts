@@ -7,12 +7,14 @@ import {
   Post,
   Query,
   UploadedFile,
+  UploadedFiles,
   UseGuards,
   UseInterceptors,
 } from '@nestjs/common';
-import { FileInterceptor } from '@nestjs/platform-express';
+import { FileFieldsInterceptor, FileInterceptor } from '@nestjs/platform-express';
 import { Rol } from '@prisma/client';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
+import { Public } from '../auth/decorators/public.decorator';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { OptionalJwtAuthGuard } from '../auth/guards/optional-jwt-auth.guard';
@@ -29,15 +31,21 @@ export class ReportsController {
 
   // POST /reports — Usuarios autenticados (REPORTANTE, RESPONSABLE, SUPERVISOR) o Invitados (Anónimos)
   @Post()
+  @Public()
   @UseGuards(OptionalJwtAuthGuard, RolesGuard)
-  @Roles(Rol.REPORTANTE, Rol.RESPONSABLE, Rol.SUPERVISOR)
-  @UseInterceptors(FileInterceptor('foto', multerOptions))
+  @Roles('REPORTANTE', 'RESPONSABLE', 'SUPERVISOR')
+  @UseInterceptors(FileFieldsInterceptor([
+    { name: 'photo', maxCount: 1 },
+    { name: 'audio', maxCount: 1 },
+  ], multerOptions))
   create(
     @Body() dto: CreateReportDto,
-    @UploadedFile() foto: Express.Multer.File | undefined,
+    @UploadedFiles() files: { photo?: Express.Multer.File[], audio?: Express.Multer.File[] },
     @CurrentUser() user?: JwtPayload,
   ) {
-    return this.reportsService.create(dto, foto, user);
+    const photo = files?.photo?.[0];
+    const audio = files?.audio?.[0];
+    return this.reportsService.create(dto, photo, audio, user);
   }
 
   // GET /reports?estadoId=...&skip=0 — Todos los autenticados; REPORTANTE no ve SOLUCIONADO
@@ -58,7 +66,7 @@ export class ReportsController {
   // GET /reports/mine — Solo REPORTANTE: sus propios reportes
   @Get('mine')
   @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(Rol.REPORTANTE)
+  @Roles('REPORTANTE')
   findMine(@CurrentUser() user: JwtPayload) {
     return this.reportsService.findMine(user.sub);
   }
@@ -69,7 +77,7 @@ export class ReportsController {
    */
   @Get('prioritized')
   @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(Rol.RESPONSABLE, Rol.SUPERVISOR)
+  @Roles('RESPONSABLE', 'SUPERVISOR')
   getPrioritized(@Query('skip') skip?: string) {
     return this.reportsService.getPrioritized(skip ? parseInt(skip, 10) : 0);
   }
@@ -98,7 +106,7 @@ export class ReportsController {
    */
   @Get('stats')
   @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(Rol.RESPONSABLE, Rol.SUPERVISOR)
+  @Roles('RESPONSABLE', 'SUPERVISOR')
   getStats() {
     return this.reportsService.getStats();
   }
@@ -115,7 +123,7 @@ export class ReportsController {
    */
   @Patch(':id/status')
   @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(Rol.RESPONSABLE)
+  @Roles('RESPONSABLE')
   @UseInterceptors(FileInterceptor('fotoEvidencia', multerOptions))
   updateStatus(
     @Param('id') id: string,

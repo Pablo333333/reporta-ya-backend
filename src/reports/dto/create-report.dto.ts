@@ -49,7 +49,9 @@ export class CreateReportDto {
    * El servidor registrará la fecha de sincronización en sincronizadoEn.
    */
   @IsOptional()
-  @Transform(({ value }) => value === 'true' || value === true)
   @IsBoolean()
   esOffline?: boolean;
+
+  @IsOptional()
+  valoresCamposExtra?: any;
 }

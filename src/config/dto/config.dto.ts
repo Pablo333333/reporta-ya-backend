@@ -17,3 +17,20 @@ export class CreateCategoriaDto {
   @IsString()
   icono?: string;
 }
+
+export class CreateCampoExtraDto {
+  @IsString()
+  @IsNotEmpty()
+  nombre: string;
+
+  @IsString()
+  @IsNotEmpty()
+  tipo: string;
+
+  @IsNotEmpty()
+  requerido: boolean;
+
+  @IsString()
+  @IsNotEmpty()
+  categoriaId: string;
+}

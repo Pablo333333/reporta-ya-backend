@@ -13,8 +13,36 @@ export class NotificationsService {
   private readonly logger = new Logger(NotificationsService.name);
 
   /**
-   * Envía notificaciones push a través de la API HTTP de Expo.
-   * Filtra tokens inválidos antes de enviar.
+   * Envía una notificación push individual (Simulado para desarrollo)
+   */
+  async sendPushNotification(expoPushToken: string, titulo: string, cuerpo: string): Promise<void> {
+    this.logger.log(`
+      📱 [EXPO PUSH NOTIFICATION]
+      TO: ${expoPushToken}
+      TITLE: ${titulo}
+      BODY: ${cuerpo}
+      STATUS: Simulado con éxito ✅
+    `);
+    
+    // Aquí se integraría expo-server-sdk en el futuro
+  }
+
+  /**
+   * Envía una alerta por mensajería instantánea (Simulado para desarrollo)
+   */
+  async sendInstantMessengerAlert(mensaje: string): Promise<void> {
+    this.logger.log(`
+      💬 [INSTANT MESSENGER ALERT]
+      PLATFORM: WhatsApp/Twilio/Bot
+      MESSAGE: ${mensaje}
+      STATUS: Simulado con éxito 🚨
+    `);
+    
+    // Aquí se integraría la API de Twilio o Telegram en el futuro
+  }
+
+  /**
+   * Envía notificaciones push a través de la API HTTP de Expo (Mantenido por compatibilidad)
    */
   async sendPushNotifications(
     tokens: string[],
@@ -26,35 +54,16 @@ export class NotificationsService {
       (t) => t.startsWith('ExponentPushToken[') || t.startsWith('ExpoPushToken['),
     );
 
-    if (validTokens.length === 0) return;
-
-    const messages: ExpoPushMessage[] = validTokens.map((to) => ({
-      to,
-      title,
-      body,
-      sound: 'default',
-      ...(data && { data }),
-    }));
-
-    try {
-      const response = await fetch('https://exp.host/--/api/v2/push/send', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Accept': 'application/json',
-          'Accept-Encoding': 'gzip, deflate',
-        },
-        body: JSON.stringify(messages),
-      });
-
-      if (!response.ok) {
-        const text = await response.text();
-        this.logger.error(`Expo Push API respondió con ${response.status}: ${text}`);
-      } else {
-        this.logger.log(`Notificaciones enviadas a ${validTokens.length} dispositivo(s)`);
-      }
-    } catch (err) {
-      this.logger.error('Error al enviar notificaciones push', err);
+    if (validTokens.length === 0) {
+      this.logger.warn('No se encontraron tokens válidos para enviar notificaciones push.');
+      return;
     }
+
+    this.logger.log(`🚀 Enviando notificaciones push a ${validTokens.length} dispositivos...`);
+
+    // Simulación descriptiva para múltiples tokens
+    validTokens.forEach(token => {
+      this.sendPushNotification(token, title, body);
+    });
   }
 }

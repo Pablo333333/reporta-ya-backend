@@ -3,12 +3,14 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { Prisma, Reporte, Rol } from '@prisma/client';
+import { Prisma, Reporte } from '@prisma/client';
 import type { JwtPayload } from '../auth/strategies/jwt.strategy';
 import { MailService } from '../mail/mail.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { UploadService } from '../upload/upload.service';
+import { AiService } from '../ai/ai.service';
+import { LlmService } from '../ai/llm.service';
 import { CreateReportDto } from './dto/create-report.dto';
 import { UpdateReportStatusDto } from './dto/update-report-status.dto';
 
@@ -19,6 +21,8 @@ export class ReportsService {
     private readonly uploadService: UploadService,
     private readonly notificationsService: NotificationsService,
     private readonly mailService: MailService,
+    private readonly aiService: AiService,
+    private readonly llmService: LlmService,
   ) {}
 
   /**
@@ -28,11 +32,33 @@ export class ReportsService {
    */
   async create(
     dto: CreateReportDto,
-    foto: Express.Multer.File | undefined,
+    photo: Express.Multer.File | undefined,
+    audio: Express.Multer.File | undefined,
     usuario?: JwtPayload,
   ): Promise<Reporte> {
-    const fotoUrl = foto ? (foto as any).path : undefined;
-    const { esOffline, categoriaId, estadoId, prioridadId, ...reportData } = dto;
+    const fotoUrl = photo ? (photo as any).path : undefined;
+    const audioUrl = audio ? (audio as any).path : undefined;
+    
+    // Transcripción automática si hay audio
+    let transcripcionVoz = dto.transcripcionVoz;
+    if (audio) {
+      const textoTranscribido = await this.aiService.transcribeAudio(audio);
+      if (textoTranscribido) {
+        transcripcionVoz = textoTranscribido;
+      }
+    }
+
+    const { esOffline, categoriaId, estadoId, prioridadId, valoresCamposExtra: rawValores, transcripcionVoz: _, ...reportData } = dto;
+
+    // Parsear valoresCamposExtra si llegan como string (desde FormData)
+    let valoresCamposExtra = rawValores;
+    if (typeof rawValores === 'string') {
+      try {
+        valoresCamposExtra = JSON.parse(rawValores);
+      } catch {
+        valoresCamposExtra = null;
+      }
+    }
 
     // 1. Obtener estado inicial (Pendiente por defecto)
     let finalEstadoId = estadoId;
@@ -71,6 +97,9 @@ export class ReportsService {
     const data: Prisma.ReporteCreateInput = {
       ...reportData,
       fotoUrl,
+      audioUrl,
+      transcripcionVoz,
+      valoresCamposExtra,
       ...(esOffline && { sincronizadoEn: new Date() }),
       categoria: { connect: { id: categoriaId } },
       estado: { connect: { id: finalEstadoId } },
@@ -92,7 +121,7 @@ export class ReportsService {
     });
 
     // 3. Lógica de Gamificación: +10 puntos para el REPORTANTE
-    if (usuario?.sub && usuario.rol === Rol.REPORTANTE) {
+    if (usuario?.sub && usuario.rol === 'REPORTANTE') {
       await this.prisma.puntosCiudadanos.create({
         data: {
           usuarioId: usuario.sub,
@@ -103,7 +132,7 @@ export class ReportsService {
     }
 
     // Auditoría inicial
-    await this.prisma.auditLog.create({
+    await this.prisma.historialReporte.create({
       data: {
         reporteId: reporte.id,
         usuarioId: usuario?.sub,
@@ -117,7 +146,29 @@ export class ReportsService {
       ? "🚨 ¡EVENTO CRÍTICO DETECTADO!" 
       : "Nuevo reporte en la vía";
 
+    // 1. Notificar a los Responsables Operativos
     this.notifyResponsables(reporte.id, reporte.categoria.nombre, tituloNotificacion).catch(() => null);
+
+    // 2. Notificar al Ciudadano (Reportante)
+    if (reporte.reportante?.pushToken) {
+      this.notificationsService.sendPushNotification(
+        reporte.reportante.pushToken,
+        "¡Tu reporte ya fue recibido! 🚀",
+        `Estamos revisando tu reporte sobre "${reporte.categoria.nombre}". ¡Gracias por colaborar!`
+      ).catch(() => null);
+    }
+
+    // 3. Alerta Crítica por Mensajería Instantánea
+    if (esEventoCritico) {
+      this.notificationsService.sendInstantMessengerAlert(
+        `🚨 ALERTA CRÍTICA: Zona "${reporte.zona}" en ROJO por acumulación de incidentes (${reporte.categoria.nombre}). Score de Riesgo Territorial elevado.`
+      ).catch(() => null);
+    } else if (reporte.prioridad.nivel >= 3) {
+      // Prioridad Alta (nivel >= 3)
+      this.notificationsService.sendInstantMessengerAlert(
+        `⚠️ REPORTE URGENTE: Se ha recibido un incidente de prioridad alta en la zona "${reporte.zona}".`
+      ).catch(() => null);
+    }
 
     return reporte;
   }
@@ -128,7 +179,7 @@ export class ReportsService {
     titulo: string = 'Nuevo reporte en la vía'
   ): Promise<void> {
     const responsables = await this.prisma.usuario.findMany({
-      where: { rol: Rol.RESPONSABLE, pushToken: { not: null } },
+      where: { rol: { nombre: 'RESPONSABLE' }, pushToken: { not: null } },
       select: { pushToken: true },
     });
 
@@ -144,7 +195,12 @@ export class ReportsService {
   }
 
   /**
-   * Cálculo dinámico del Índice de Riesgo e inyección en el JSON.
+   * Cálculo dinámico del Índice de Riesgo Territorial.
+   * FÓRMULA ARQUITECTÓNICA: 0.6 * Gravedad + 0.4 * Frecuencia.
+   * 
+   * Justificación: Se prioriza la gravedad intrínseca del incidente (60%) 
+   * sobre la acumulación histórica (40%) para garantizar que eventos críticos 
+   * aislados no sean ignorados por falta de repetición.
    */
   private async calculateRiskIndex(reporte: any): Promise<number> {
     const gravedad = reporte.prioridad?.nivel || 1;
@@ -157,13 +213,22 @@ export class ReportsService {
         estado: { esFinal: false }
       }
     });
-    return parseFloat(((gravedad * 0.6) + (frecuencia * 0.4)).toFixed(2));
+
+    // Obtener pesos dinámicos de la configuración
+    const configs = await this.prisma.configSistema.findMany({
+      where: { clave: { in: ['PESO_GRAVEDAD', 'PESO_FRECUENCIA'] } }
+    });
+
+    const pesoGravedad = parseFloat(configs.find(c => c.clave === 'PESO_GRAVEDAD')?.valor || '0.6');
+    const pesoFrecuencia = parseFloat(configs.find(c => c.clave === 'PESO_FRECUENCIA')?.valor || '0.4');
+
+    return parseFloat(((gravedad * pesoGravedad) + (frecuencia * pesoFrecuencia)).toFixed(2));
   }
 
-  async findAll(skip: number = 0, estadoId?: string, userRol?: Rol): Promise<any[]> {
+  async findAll(skip: number = 0, estadoId?: string, userRol?: string): Promise<any[]> {
     const where: Prisma.ReporteWhereInput = {};
     if (estadoId) where.estadoId = estadoId;
-    if (userRol === Rol.REPORTANTE) where.estado = { esFinal: false };
+    if (userRol === 'REPORTANTE') where.estado = { esFinal: false };
 
     const reportes = await this.prisma.reporte.findMany({
       where,
@@ -210,7 +275,7 @@ export class ReportsService {
    */
   async getRankingCiudadano(): Promise<any[]> {
     const ranking = await this.prisma.usuario.findMany({
-      where: { rol: Rol.REPORTANTE },
+      where: { rol: { nombre: 'REPORTANTE' } },
       select: {
         id: true,
         email: true,
@@ -263,7 +328,7 @@ export class ReportsService {
       });
 
       // Auditoría de reapertura
-      await this.prisma.auditLog.create({
+      await this.prisma.historialReporte.create({
         data: {
           reporteId,
           usuarioId: usuario?.sub,
@@ -291,22 +356,22 @@ export class ReportsService {
     if (keywordsAmbiental.some(k => t.includes(k))) sugerenciaNombre = "Ambiental";
     else if (keywordsVial.some(k => t.includes(k))) sugerenciaNombre = "Vial";
 
-    if (sugerenciaNombre) {
-      const cat = await this.prisma.configCategoria.findFirst({
-        where: { nombre: { contains: sugerenciaNombre, mode: 'insensitive' } }
-      });
-      if (cat) return { categoriaId: cat.id, nombre: cat.nombre, metodo: "Keywords" };
-    }
-
-    // 2. Simulación de IA Ligera (Gemini/Grok)
-    // En una implementación real aquí se llamaría a la API de IA.
-    const categorias = await this.prisma.configCategoria.findMany({ where: { activo: true } });
-    const randomCat = categorias[Math.floor(Math.random() * categorias.length)];
+    // 2. Motor de IA (LLM Integration)
+    const categoriasDisponibles = await this.prisma.configCategoria.findMany({ where: { activo: true } });
     
+    // El LlmService ahora hace su propio fetch dinámico de categorías y estados
+    const sugerenciaIA = await this.llmService.clasificarReporte(texto);
+    
+    const cat = categoriasDisponibles.find(c => 
+      c.nombre.toLowerCase() === sugerenciaIA.categoria.toLowerCase()
+    );
+
     return { 
-      categoriaId: randomCat?.id, 
-      nombre: randomCat?.nombre, 
-      metodo: "IA Ligera (Simulada)" 
+      categoriaId: cat?.id || categoriasDisponibles[0]?.id, 
+      nombre: cat?.nombre || categoriasDisponibles[0]?.nombre, 
+      prioridadSugerida: sugerenciaIA.prioridad,
+      razon: sugerenciaIA.razon,
+      metodo: sugerenciaNombre ? "Híbrido (Keywords + LLM)" : "LLM (OpenAI/Gemini)" 
     };
   }
 
@@ -328,7 +393,7 @@ export class ReportsService {
         categoria: true,
         estado: true,
         prioridad: true,
-        auditLogs: {
+        historial: {
           include: { 
             usuario: { select: { email: true, rol: true } },
             estadoAnterior: true,
@@ -353,11 +418,29 @@ export class ReportsService {
     fotoEvidencia: Express.Multer.File | undefined,
     usuario: JwtPayload,
   ): Promise<Reporte> {
-    const reporte = await this.prisma.reporte.findUnique({ where: { id } });
+    const reporte = await this.prisma.reporte.findUnique({ 
+      where: { id },
+      include: { categoria: true }
+    });
     if (!reporte) throw new NotFoundException(`Reporte con id ${id} no encontrado`);
 
-    if (usuario.rol !== Rol.RESPONSABLE) {
+    if (usuario.rol !== 'RESPONSABLE') {
       throw new ForbiddenException('Solo los responsables pueden actualizar el estado');
+    }
+
+    // Lógica de APRENDIZAJE IA: Si el operador cambia la categoría
+    if (dto.categoriaId && dto.categoriaId !== reporte.categoriaId) {
+      const nuevaCategoria = await this.prisma.configCategoria.findUnique({ where: { id: dto.categoriaId } });
+      if (nuevaCategoria) {
+        await this.prisma.aprendizajeIa.create({
+          data: {
+            textoReporte: reporte.comentario || reporte.transcripcionVoz || 'Sin texto',
+            categoriaSugerida: reporte.categoria.nombre,
+            categoriaReal: nuevaCategoria.nombre,
+            corregido: true,
+          }
+        });
+      }
     }
 
     const fotoEvidenciaUrl = fotoEvidencia ? (fotoEvidencia as any).path : undefined;
@@ -366,12 +449,13 @@ export class ReportsService {
       where: { id },
       data: {
         estadoId: dto.estadoId,
+        ...(dto.categoriaId && { categoriaId: dto.categoriaId }),
         ...(dto.comentarioResolucion && { comentarioResolucion: dto.comentarioResolucion }),
         ...(fotoEvidenciaUrl && { fotoEvidenciaUrl }),
       },
     });
 
-    await this.prisma.auditLog.create({
+    await this.prisma.historialReporte.create({
       data: {
         reporteId: id,
         usuarioId: usuario.sub,

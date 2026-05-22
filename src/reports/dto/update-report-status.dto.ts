@@ -5,6 +5,10 @@ export class UpdateReportStatusDto {
   estadoId: string;
 
   @IsOptional()
+  @IsUUID()
+  categoriaId?: string;
+
+  @IsOptional()
   @IsString()
   comentarioResolucion?: string;
 }

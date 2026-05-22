@@ -33,15 +33,23 @@ export class AuthService {
 
     const hashedPassword = await bcrypt.hash(dto.password, SALT_ROUNDS);
 
+    const rol = await this.prisma.rol.findUnique({
+      where: { nombre: dto.rol },
+    });
+
+    if (!rol) {
+      throw new ConflictException(`El rol "${dto.rol}" no está configurado en el sistema`);
+    }
+
     const usuario = await this.prisma.usuario.create({
       data: {
         email: dto.email,
         password: hashedPassword,
-        rol: dto.rol,
+        rolId: rol.id,
       },
     });
 
-    return this.signToken(usuario.id, usuario.email, usuario.rol);
+    return this.signToken(usuario.id, usuario.email, rol.nombre, usuario.territorioId);
   }
 
   async login(dto: LoginDto): Promise<{ accessToken: string }> {
@@ -49,6 +57,7 @@ export class AuthService {
 
     const usuario = await this.prisma.usuario.findUnique({
       where: { email: dto.email },
+      include: { rol: true },
     });
 
     if (!usuario) {
@@ -57,7 +66,7 @@ export class AuthService {
     }
 
     this.logger.debug(
-      `[LOGIN] Usuario encontrado — id: ${usuario.id}, rol: ${usuario.rol}, ` +
+      `[LOGIN] Usuario encontrado — id: ${usuario.id}, rol: ${usuario.rol.nombre}, ` +
       `hash almacenado (primeros 20 chars): "${usuario.password.substring(0, 20)}…"`,
     );
 
@@ -69,16 +78,22 @@ export class AuthService {
       throw new UnauthorizedException('Credenciales incorrectas');
     }
 
-    this.logger.log(`[LOGIN] Login exitoso — ${usuario.email} (${usuario.rol})`);
-    return this.signToken(usuario.id, usuario.email, usuario.rol);
+    this.logger.log(`[LOGIN] Login exitoso — ${usuario.email} (${usuario.rol.nombre})`);
+    return this.signToken(usuario.id, usuario.email, usuario.rol.nombre, usuario.territorioId);
   }
 
   private signToken(
     userId: string,
     email: string,
     rol: string,
+    territorioId: string | null,
   ): { accessToken: string } {
-    const payload: JwtPayload = { sub: userId, email, rol: rol as JwtPayload['rol'] };
+    const payload: JwtPayload = { 
+      sub: userId, 
+      email, 
+      rol: rol as JwtPayload['rol'],
+      territorioId,
+    };
     return { accessToken: this.jwtService.sign(payload) };
   }
 }

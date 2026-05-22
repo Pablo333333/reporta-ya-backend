@@ -2,14 +2,16 @@ import { Injectable, Logger, OnModuleInit, OnModuleDestroy } from '@nestjs/commo
 import { PrismaPg } from '@prisma/adapter-pg';
 import pg from 'pg';
 import { PrismaClient } from '@prisma/client';
+import { TenantContext } from '../common/tenant-context';
 
 @Injectable()
 export class PrismaService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(PrismaService.name);
   private pool!: pg.Pool;
-  private client!: PrismaClient;
+  private client!: any; // Usamos any para permitir el cliente extendido
 
   get usuario() { return this.client.usuario; }
+  get territorio() { return this.client.territorio; }
   get reporte() { return this.client.reporte; }
   get comunicado() { return this.client.comunicado; }
   get auditLog() { return this.client.auditLog; }
@@ -35,8 +37,44 @@ export class PrismaService implements OnModuleInit, OnModuleDestroy {
     this.logger.log('Conexión a PostgreSQL verificada');
 
     const adapter = new PrismaPg(this.pool as any);
-    this.client = new PrismaClient({ adapter });
-    await this.client.$connect();
+    const baseClient = new PrismaClient({ adapter });
+    
+    // Aplicamos la extensión de Multi-tenancy
+    this.client = baseClient.$extends({
+      query: {
+        $allModels: {
+          async $allOperations({ model, operation, args, query }) {
+            const territorioId = TenantContext.territorioId;
+            
+            // Si hay un territorioId en el contexto, lo aplicamos a las consultas
+            // Solo si el modelo tiene el campo territorioId (según schema.prisma)
+            const modelsWithTenant = [
+              'Usuario', 'Reporte', 'Comunicado', 'ConfigSistema', 
+              'ConfigCategoria', 'ConfigEstado', 'ConfigPrioridad'
+            ];
+
+            if (territorioId && modelsWithTenant.includes(model)) {
+              if (['findMany', 'findFirst', 'findUnique', 'count', 'aggregate', 'groupBy'].includes(operation)) {
+                args.where = { ...args.where, territorioId };
+              } else if (['update', 'updateMany', 'upsert', 'delete', 'deleteMany'].includes(operation)) {
+                args.where = { ...args.where, territorioId };
+              } else if (['create', 'createMany'].includes(operation)) {
+                if (operation === 'create') {
+                  args.data = { ...args.data, territorioId };
+                } else {
+                  if (Array.isArray(args.data)) {
+                    args.data = args.data.map(item => ({ ...item, territorioId }));
+                  }
+                }
+              }
+            }
+            return query(args);
+          },
+        },
+      },
+    });
+
+    await baseClient.$connect();
 
     const userCount = await this.client.usuario.count();
     this.logger.log(`Usuarios en la base de datos: ${userCount}`);

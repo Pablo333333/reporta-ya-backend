@@ -1,6 +1,6 @@
 /**
  * Seed de base de datos — Reporta Ya
- * Optimizado para Prisma v7.5.0+ con Driver Adapter
+ * Optimizado para Prisma v7.5.0+ con RBAC Dinámico
  */
 import 'dotenv/config';
 import * as bcrypt from 'bcryptjs';
@@ -15,19 +15,18 @@ if (!connectionString) {
   process.exit(1);
 }
 
-// Inicialización del cliente con el driver adapter requerido por Prisma v7 para DB locales
 const pool = new pg.Pool({ connectionString });
 const adapter = new PrismaPg(pool as any);
 const prisma = new PrismaClient({ adapter });
 
-// ─── Configuración Inicial del Sistema ─────────────────────────────────────────
 const SEED_CONFIGS = [
   { clave: 'NOMBRE_APP', valor: 'Reporta Ya', descripcion: 'Nombre comercial de la plataforma' },
   { clave: 'SLOGAN', valor: 'Vigilancia Territorial Inteligente', descripcion: 'Slogan de la pantalla principal' },
   { clave: 'COLOR_PRIMARIO', valor: '#007AFF', descripcion: 'Color hexadecimal de la interfaz móvil' },
+  { clave: 'PESO_GRAVEDAD', valor: '0.6', descripcion: 'Peso de la gravedad en la fórmula de riesgo (0-1)' },
+  { clave: 'PESO_FRECUENCIA', valor: '0.4', descripcion: 'Peso de la frecuencia en la fórmula de riesgo (0-1)' },
 ];
 
-// ─── Estados de los Reportes (Flujo de Trabajo) ──────────────────────────────
 const SEED_ESTADOS = [
   { nombre: 'Pendiente', color: '#FF3B30', esFinal: false, orden: 1 },
   { nombre: 'En Proceso', color: '#FFCC00', esFinal: false, orden: 2 },
@@ -35,14 +34,12 @@ const SEED_ESTADOS = [
   { nombre: 'Reabierto', color: '#5856D6', esFinal: false, orden: 4 },
 ];
 
-// ─── Prioridades de Gestión ──────────────────────────────────────────────────
 const SEED_PRIORIDADES = [
   { nombre: 'Baja', color: '#8E8E93', nivel: 1 },
   { nombre: 'Media', color: '#FF9500', nivel: 2 },
   { nombre: 'Urgente', color: '#FF3B30', nivel: 3 },
 ];
 
-// ─── Categorías Multitemáticas ──────────────────────────────────────────────
 const SEED_CATEGORIAS = [
   { nombre: 'Piedras en la vía', descripcion: 'Obstrucción por desprendimiento de rocas', color: '#FF9500', icono: 'road' },
   { nombre: 'Derrumbe', descripcion: 'Deslizamiento de tierra masivo', color: '#FF3B30', icono: 'danger' },
@@ -53,20 +50,21 @@ const SEED_CATEGORIAS = [
   { nombre: 'Residuos Sólidos', descripcion: 'Acumulación de basura o desmonte en zonas no autorizadas', color: '#4CD964', icono: 'trash-can' },
 ];
 
+const SEED_PERMISOS = [
+  { nombre: 'can_view_reports', descripcion: 'Ver reportes' },
+  { nombre: 'can_create_reports', descripcion: 'Crear reportes' },
+  { nombre: 'can_edit_reports', descripcion: 'Editar estado de reportes' },
+  { nombre: 'can_manage_users', descripcion: 'Gestionar usuarios y roles' },
+  { nombre: 'can_manage_config', descripcion: 'Gestionar configuración del sistema' },
+];
+
 const SALT_ROUNDS = 12;
 
-const SEED_USERS = [
-  { email: 'test@reporte.com', password: '1234', rol: 'REPORTANTE' as const, label: 'REPORTANTE' },
-  { email: 'test@responsable.com', password: '1234', rol: 'RESPONSABLE' as const, label: 'RESPONSABLE' },
-  { email: 'test@supervisor.com', password: '1234', rol: 'SUPERVISOR' as const, label: 'SUPERVISOR' },
-] as const;
-
 async function main(): Promise<void> {
-  console.log('\n🌱   Iniciando seed de Reporta Ya (Prisma v7 Driver Adapter Compliance)…\n');
+  console.log('\n🌱   Iniciando seed de Reporta Ya (RBAC Dinámico)…\n');
 
   try {
-    // 1. Cargar Configuración Global
-    console.log('⚙️   Populando Configuración Global...');
+    // 1. Configuración Global
     for (const config of SEED_CONFIGS) {
       await prisma.configSistema.upsert({
         where: { clave: config.clave },
@@ -74,10 +72,8 @@ async function main(): Promise<void> {
         create: config,
       });
     }
-    console.log('    ✅ Parámetros globales listos.\n');
 
-    // 2. Cargar Estados del Flujo
-    console.log('🔄  Populando Estados del Flujo...');
+    // 2. Estados
     for (const estado of SEED_ESTADOS) {
       await prisma.configEstado.upsert({
         where: { nombre: estado.nombre },
@@ -85,10 +81,8 @@ async function main(): Promise<void> {
         create: estado,
       });
     }
-    console.log('    ✅ Estados operativos listos.\n');
 
-    // 3. Cargar Prioridades
-    console.log('⚠️   Populando Niveles de Prioridad...');
+    // 3. Prioridades
     for (const prioridad of SEED_PRIORIDADES) {
       await prisma.configPrioridad.upsert({
         where: { nombre: prioridad.nombre },
@@ -96,10 +90,8 @@ async function main(): Promise<void> {
         create: prioridad,
       });
     }
-    console.log('    ✅ Niveles de urgencia listos.\n');
 
-    // 4. Cargar Categorías
-    console.log('📂   Populando Categorías...');
+    // 4. Categorías
     for (const categoria of SEED_CATEGORIAS) {
       await prisma.configCategoria.upsert({
         where: { nombre: categoria.nombre },
@@ -107,29 +99,77 @@ async function main(): Promise<void> {
         create: categoria,
       });
     }
-    console.log('    ✅ Matriz de categorías territorial lista.\n');
 
-    // 5. Cargar Usuarios
-    console.log('👤   Populando Usuarios de Prueba...');
-    for (const userData of SEED_USERS) {
-      const hashedPassword = await bcrypt.hash(userData.password, SALT_ROUNDS);
+    // 5. Permisos
+    const permisosCreados: Record<string, any> = {};
+    for (const p of SEED_PERMISOS) {
+      permisosCreados[p.nombre] = await prisma.permiso.upsert({
+        where: { nombre: p.nombre },
+        update: { descripcion: p.descripcion },
+        create: p,
+      });
+    }
 
-      const usuario = await prisma.usuario.upsert({
-        where: { email: userData.email },
-        update: {
-          password: hashedPassword,
-          rol: userData.rol,
-        },
-        create: {
-          email: userData.email,
-          password: hashedPassword,
-          rol: userData.rol,
-        },
+    // 6. Roles y Relaciones
+    const roles = [
+      { 
+        nombre: 'REPORTANTE', 
+        descripcion: 'Ciudadano que reporta incidentes',
+        permisos: ['can_view_reports', 'can_create_reports']
+      },
+      { 
+        nombre: 'RESPONSABLE', 
+        descripcion: 'Operador técnico que resuelve incidentes',
+        permisos: ['can_view_reports', 'can_edit_reports']
+      },
+      { 
+        nombre: 'SUPERVISOR', 
+        descripcion: 'Administrador total del sistema',
+        permisos: SEED_PERMISOS.map(p => p.nombre)
+      },
+    ];
+
+    for (const r of roles) {
+      const rol = await prisma.rol.upsert({
+        where: { nombre: r.nombre },
+        update: { descripcion: r.descripcion },
+        create: { nombre: r.nombre, descripcion: r.descripcion },
       });
 
-      console.log(
-        `    ✅  ${userData.label.padEnd(12)} →  ${usuario.email}  (id: ${usuario.id})`,
-      );
+      // Asignar permisos al rol
+      for (const pNombre of r.permisos) {
+        await prisma.rolPermiso.upsert({
+          where: {
+            rolId_permisoId: {
+              rolId: rol.id,
+              permisoId: permisosCreados[pNombre].id,
+            },
+          },
+          update: {},
+          create: {
+            rolId: rol.id,
+            permisoId: permisosCreados[pNombre].id,
+          },
+        });
+      }
+    }
+
+    // 7. Usuarios de Prueba
+    const users = [
+      { email: 'test@reporte.com', password: '1234', rol: 'REPORTANTE' },
+      { email: 'test@responsable.com', password: '1234', rol: 'RESPONSABLE' },
+      { email: 'test@supervisor.com', password: '1234', rol: 'SUPERVISOR' },
+    ];
+
+    for (const u of users) {
+      const hashedPassword = await bcrypt.hash(u.password, SALT_ROUNDS);
+      const rol = await prisma.rol.findUnique({ where: { nombre: u.rol } });
+      
+      await prisma.usuario.upsert({
+        where: { email: u.email },
+        update: { password: hashedPassword, rolId: rol!.id },
+        create: { email: u.email, password: hashedPassword, rolId: rol!.id },
+      });
     }
 
     console.log('\n🎉   Seed completado exitosamente.\n');

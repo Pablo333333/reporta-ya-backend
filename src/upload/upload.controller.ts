@@ -4,19 +4,21 @@ import {
   HttpStatus,
   Post,
   Req,
-  UploadedFile,
+  UploadedFiles,
   UseGuards,
   UseInterceptors,
 } from '@nestjs/common';
-import { FileInterceptor } from '@nestjs/platform-express';
+import { FileFieldsInterceptor } from '@nestjs/platform-express';
 import type { Request } from 'express';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { multerOptions } from './upload.config';
 import { UploadService } from './upload.service';
 
-export interface UploadPhotoResponse {
+export interface UploadResponse {
   url: string;
   filename: string;
+  photo?: { url: string; filename: string };
+  audio?: { url: string; filename: string };
 }
 
 @UseGuards(JwtAuthGuard)
@@ -27,22 +29,44 @@ export class UploadController {
   /**
    * POST /upload/photo
    *
-   * Recibe un archivo en el campo "photo" (multipart/form-data).
-   * Cloudinary lo guarda y devuelve la URL.
-   *
-   * Ejemplo de respuesta:
-   * {
-   *   "url": "https://res.cloudinary.com/demo/image/upload/v123456789/reporta-ya/photo-1710000000000-123456.jpg",
-   *   "filename": "reporta-ya/photo-1710000000000-123456"
-   * }
+   * Recibe archivos en los campos "photo" y/o "audio" (multipart/form-data).
+   * Cloudinary los guarda y devuelve las URLs.
    */
   @Post('photo')
   @HttpCode(HttpStatus.CREATED)
-  @UseInterceptors(FileInterceptor('photo', multerOptions))
-  uploadPhoto(
-    @UploadedFile() file: any,
-  ): UploadPhotoResponse {
-    // Con CloudinaryStorage, file.path contiene la URL segura y file.filename el public_id
-    return { url: file.path, filename: file.filename };
+  @UseInterceptors(
+    FileFieldsInterceptor(
+      [
+        { name: 'photo', maxCount: 1 },
+        { name: 'audio', maxCount: 1 },
+      ],
+      multerOptions,
+    ),
+  )
+  uploadFiles(
+    @UploadedFiles() files: { photo?: any[]; audio?: any[] },
+  ): UploadResponse {
+    const response: any = {};
+
+    const photo = files?.photo?.[0];
+    const audio = files?.audio?.[0];
+
+    if (photo) {
+      response.photo = { url: photo.path, filename: photo.filename };
+      // Compatibilidad con la interfaz anterior
+      response.url = photo.path;
+      response.filename = photo.filename;
+    }
+
+    if (audio) {
+      response.audio = { url: audio.path, filename: audio.filename };
+      // Si no hay foto, el audio es el principal
+      if (!response.url) {
+        response.url = audio.path;
+        response.filename = audio.filename;
+      }
+    }
+
+    return response;
   }
 }
