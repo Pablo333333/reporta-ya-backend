@@ -130,16 +130,27 @@ export class GlobalConfigService {
     });
   }
 
-  async getLogs(params: { usuarioId?: string; accion?: string }) {
-    return this.prisma.logAccion.findMany({
+  async getLogs(params: { usuarioId?: string; accion?: string; territorioId?: string }) {
+    const logs = await this.prisma.logAccion.findMany({
       where: {
         ...(params.usuarioId && { usuarioId: params.usuarioId }),
         ...(params.accion && { accion: { contains: params.accion, mode: 'insensitive' } }),
+        ...(params.territorioId && {
+          usuario: {
+            territorioId: params.territorioId,
+          },
+        }),
       },
-      include: { usuario: { select: { email: true } } },
+      include: { usuario: { select: { email: true, territorioId: true } } },
       orderBy: { fecha: 'desc' },
       take: 100,
     });
+    console.log(`[DEBUG] GlobalConfigService.getLogs - Encontrados ${logs.length} logs`);
+    if (logs.length === 0) {
+      const totalSinFiltro = await this.prisma.logAccion.count();
+      console.log(`[DEBUG] GlobalConfigService.getLogs - Total en tabla (sin filtros): ${totalSinFiltro}`);
+    }
+    return logs;
   }
 
   async updateRolPermisos(rolId: string, permisoIds: string[]) {

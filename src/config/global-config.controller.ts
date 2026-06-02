@@ -7,6 +7,7 @@ import {
   Patch, 
   Post, 
   Query,
+  Headers,
   UseGuards 
 } from '@nestjs/common';
 import { GlobalConfigService } from './global-config.service';
@@ -14,6 +15,7 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { Public } from '../auth/decorators/public.decorator';
+import { AuditAction } from '../common/decorators/audit.decorator';
 import { Rol } from '@prisma/client';
 import { CreateCampoExtraDto, CreateCategoriaDto, UpdateSistemaDto } from './dto/config.dto';
 
@@ -32,6 +34,7 @@ export class GlobalConfigController {
   @Patch('sistema/:clave')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('RESPONSABLE', 'SUPERVISOR')
+  @AuditAction('UPDATE_SYSTEM_CONFIG')
   updateSistema(
     @Param('clave') clave: string,
     @Body() dto: UpdateSistemaDto,
@@ -50,6 +53,7 @@ export class GlobalConfigController {
   @Post('categorias')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('RESPONSABLE', 'SUPERVISOR')
+  @AuditAction('CREATE_CATEGORY')
   createCategoria(@Body() dto: CreateCategoriaDto) {
     return this.configService.createCategoria(dto);
   }
@@ -57,6 +61,7 @@ export class GlobalConfigController {
   @Patch('categorias/:id')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('RESPONSABLE', 'SUPERVISOR')
+  @AuditAction('UPDATE_CATEGORY')
   updateCategoria(
     @Param('id') id: string,
     @Body() data: any,
@@ -69,6 +74,7 @@ export class GlobalConfigController {
   @Post('campos-extra')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('SUPERVISOR')
+  @AuditAction('CREATE_EXTRA_FIELD')
   createCampoExtra(@Body() dto: CreateCampoExtraDto) {
     return this.configService.createCampoExtra(dto);
   }
@@ -76,6 +82,7 @@ export class GlobalConfigController {
   @Delete('campos-extra/:id')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('SUPERVISOR')
+  @AuditAction('DELETE_EXTRA_FIELD')
   deleteCampoExtra(@Param('id') id: string) {
     return this.configService.deleteCampoExtra(id);
   }
@@ -91,6 +98,7 @@ export class GlobalConfigController {
   @Post('estados')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('RESPONSABLE', 'SUPERVISOR')
+  @AuditAction('CREATE_STATUS')
   createEstado(@Body() data: any) {
     return this.configService.createEstado(data);
   }
@@ -98,6 +106,7 @@ export class GlobalConfigController {
   @Patch('estados/:id')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('RESPONSABLE', 'SUPERVISOR')
+  @AuditAction('UPDATE_STATUS_CONFIG')
   updateEstado(
     @Param('id') id: string,
     @Body() data: any,
@@ -116,6 +125,7 @@ export class GlobalConfigController {
   @Post('prioridades')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('RESPONSABLE', 'SUPERVISOR')
+  @AuditAction('CREATE_PRIORITY')
   createPrioridad(@Body() data: any) {
     return this.configService.createPrioridad(data);
   }
@@ -123,6 +133,7 @@ export class GlobalConfigController {
   @Patch('prioridades/:id')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('RESPONSABLE', 'SUPERVISOR')
+  @AuditAction('UPDATE_PRIORITY')
   updatePrioridad(
     @Param('id') id: string,
     @Body() data: any,
@@ -142,8 +153,15 @@ export class GlobalConfigController {
   getLogs(
     @Query('usuarioId') usuarioId?: string,
     @Query('accion') accion?: string,
+    @Headers() headers?: any,
   ) {
-    return this.configService.getLogs({ usuarioId, accion });
+    const territorioId = headers?.['x-territorio-id'];
+    console.log('[DEBUG] GlobalConfigController.getLogs - Query Params:', { usuarioId, accion });
+    console.log('[DEBUG] GlobalConfigController.getLogs - Headers:', { 
+      'x-territorio-id': territorioId,
+      'authorization': headers?.['authorization'] ? 'Presente' : 'Ausente'
+    });
+    return this.configService.getLogs({ usuarioId, accion, territorioId });
   }
 
   // ─── Roles y Permisos ──────────────────────────────────────────────────────
@@ -165,6 +183,7 @@ export class GlobalConfigController {
   @Patch('roles/:id/permisos')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('SUPERVISOR')
+  @AuditAction('UPDATE_ROLE_PERMISSIONS')
   updateRolPermisos(
     @Param('id') id: string,
     @Body('permisoIds') permisoIds: string[],

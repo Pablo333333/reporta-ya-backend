@@ -1,6 +1,7 @@
 import {
   ForbiddenException,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { Prisma, Reporte } from '@prisma/client';
@@ -13,9 +14,11 @@ import { AiService } from '../ai/ai.service';
 import { LlmService } from '../ai/llm.service';
 import { CreateReportDto } from './dto/create-report.dto';
 import { UpdateReportStatusDto } from './dto/update-report-status.dto';
+import { TenantContext } from '../common/tenant-context';
 
 @Injectable()
 export class ReportsService {
+  private readonly logger = new Logger(ReportsService.name);
   constructor(
     private readonly prisma: PrismaService,
     private readonly uploadService: UploadService,
@@ -120,12 +123,12 @@ export class ReportsService {
       }
     });
 
-    // 3. Lógica de Gamificación: +10 puntos para el REPORTANTE
+    // 3. Lógica de Gamificación: +5 puntos para el REPORTANTE
     if (usuario?.sub && usuario.rol === 'REPORTANTE') {
       await this.prisma.puntosCiudadanos.create({
         data: {
           usuarioId: usuario.sub,
-          puntos: 10,
+          puntos: 5,
           motivo: `Reporte creado: ${reporte.id}`,
         },
       });
@@ -308,10 +311,24 @@ export class ReportsService {
     if (!reporte) throw new NotFoundException(`Reporte ${reporteId} no encontrado`);
 
     if (aprobado) {
-      return this.prisma.reporte.update({
+      const updated = await this.prisma.reporte.update({
         where: { id: reporteId },
-        data: { validadoCiudadano: true }
+        data: { validadoCiudadano: true },
+        include: { reportante: true }
       });
+
+      // Gamificación: +15 puntos por validación exitosa
+      if (updated.reportanteId) {
+        await this.prisma.puntosCiudadanos.create({
+          data: {
+            usuarioId: updated.reportanteId,
+            puntos: 15,
+            motivo: `Validación exitosa de reporte: ${reporteId}`,
+          },
+        });
+      }
+
+      return updated;
     } else {
       // Reapertura automática
       const estadoPendiente = await this.prisma.configEstado.findFirst({
@@ -424,8 +441,28 @@ export class ReportsService {
     });
     if (!reporte) throw new NotFoundException(`Reporte con id ${id} no encontrado`);
 
-    if (usuario.rol !== 'RESPONSABLE') {
-      throw new ForbiddenException('Solo los responsables pueden actualizar el estado');
+    this.logger.debug(`[DEBUG] updateStatus - Usuario recibido: ${JSON.stringify(usuario)}`);
+    this.logger.debug(`[DEBUG] updateStatus - TenantContext.territorioId: ${TenantContext.territorioId}`);
+    this.logger.debug(`[DEBUG] updateStatus - Reporte territorioId: ${reporte.territorioId}`);
+
+    const userRol = typeof usuario.rol === 'object' ? (usuario.rol as any).nombre : usuario.rol;
+
+    // Validación simplificada de territorio
+    const esMismoTerritorio = (TenantContext.territorioId === reporte.territorioId);
+    const esModoGlobal = (TenantContext.territorioId === null && reporte.territorioId === null);
+
+    if (!esMismoTerritorio && !esModoGlobal) {
+      throw new ForbiddenException('No tienes permiso para modificar reportes de otro territorio');
+    }
+
+    if (userRol !== 'RESPONSABLE' && userRol !== 'SUPERVISOR') {
+      throw new ForbiddenException(`Solo los responsables o supervisores pueden actualizar el estado. Rol detectado: ${userRol}`);
+    }
+
+    // Validación de requerimiento de foto según el estado
+    const nuevoEstado = await this.prisma.configEstado.findUnique({ where: { id: dto.estadoId } });
+    if (nuevoEstado?.requiereFoto && !fotoEvidencia) {
+      throw new ForbiddenException(`El estado "${nuevoEstado.nombre}" requiere una foto de evidencia para ser aplicado`);
     }
 
     // Lógica de APRENDIZAJE IA: Si el operador cambia la categoría

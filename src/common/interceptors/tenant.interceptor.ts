@@ -17,6 +17,10 @@ export class TenantInterceptor implements NestInterceptor {
     const headerTerritorioId = request.headers['x-territorio-id'];
     const territorioId = headerTerritorioId || user?.territorioId || null;
 
+    console.log(`[DEBUG] TenantInterceptor - user: ${JSON.stringify(user)}`);
+    console.log(`[DEBUG] TenantInterceptor - headerTerritorioId: ${headerTerritorioId}`);
+    console.log(`[DEBUG] TenantInterceptor - Final territorioId: ${territorioId}`);
+
     return new Observable((observer) => {
       TenantContext.run(territorioId, () => {
         next.handle().subscribe({

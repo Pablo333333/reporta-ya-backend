@@ -2,6 +2,7 @@ import {
   Body,
   Controller,
   Get,
+  Logger,
   Param,
   Patch,
   Post,
@@ -16,6 +17,7 @@ import { Rol } from '@prisma/client';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { Public } from '../auth/decorators/public.decorator';
 import { Roles } from '../auth/decorators/roles.decorator';
+import { AuditAction } from '../common/decorators/audit.decorator';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { OptionalJwtAuthGuard } from '../auth/guards/optional-jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
@@ -27,6 +29,7 @@ import { ReportsService } from './reports.service';
 
 @Controller('reports')
 export class ReportsController {
+  private readonly logger = new Logger(ReportsController.name);
   constructor(private readonly reportsService: ReportsService) {}
 
   // POST /reports — Usuarios autenticados (REPORTANTE, RESPONSABLE, SUPERVISOR) o Invitados (Anónimos)
@@ -34,6 +37,7 @@ export class ReportsController {
   @Public()
   @UseGuards(OptionalJwtAuthGuard, RolesGuard)
   @Roles('REPORTANTE', 'RESPONSABLE', 'SUPERVISOR')
+  @AuditAction('CREATE_REPORT')
   @UseInterceptors(FileFieldsInterceptor([
     { name: 'photo', maxCount: 1 },
     { name: 'audio', maxCount: 1 },
@@ -123,7 +127,8 @@ export class ReportsController {
    */
   @Patch(':id/status')
   @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('RESPONSABLE')
+  @Roles('RESPONSABLE', 'SUPERVISOR')
+  @AuditAction('UPDATE_REPORT_STATUS')
   @UseInterceptors(FileInterceptor('fotoEvidencia', multerOptions))
   updateStatus(
     @Param('id') id: string,
@@ -131,6 +136,7 @@ export class ReportsController {
     @UploadedFile() fotoEvidencia: Express.Multer.File | undefined,
     @CurrentUser() user: JwtPayload,
   ) {
+    this.logger.debug(`[DEBUG] updateStatus - Payload recibido: ${JSON.stringify(dto)}`);
     return this.reportsService.updateStatus(id, dto, fotoEvidencia, user);
   }
 
@@ -140,6 +146,7 @@ export class ReportsController {
    */
   @Patch(':id/validar')
   @UseGuards(JwtAuthGuard)
+  @AuditAction('VALIDATE_REPORT_SOLUTION')
   validar(
     @Param('id') id: string,
     @Body('aprobado') aprobado: boolean,

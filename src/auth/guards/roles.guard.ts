@@ -34,7 +34,7 @@ export class RolesGuard implements CanActivate {
     // Si no se requiere ni rol ni permiso, permitimos el paso (asumiendo que JwtAuthGuard ya validó la autenticación)
     if (!requiredRoles?.length && !requiredPermissions?.length) return true;
 
-    const request = context.switchToHttp().getRequest<{ user: JwtPayload }>();
+    const request = context.switchToHttp().getRequest<any>();
     const userPayload = request.user;
 
     if (!userPayload) {
@@ -64,9 +64,16 @@ export class RolesGuard implements CanActivate {
     const userRoleName = user.rol.nombre;
     const userPermissions = user.rol.permisos.map(rp => rp.permiso.nombre);
 
+    console.log(`[DEBUG] RolesGuard - userRoleName: ${userRoleName}`);
+    console.log(`[DEBUG] RolesGuard - requiredRoles: ${requiredRoles}`);
+
     // 0. Validación de Territorio (Multi-Tenancy)
     const territorioIdHeader = request.headers['x-territorio-id'] as string;
+    console.log(`[DEBUG] RolesGuard - territorioIdHeader: ${territorioIdHeader}`);
+    console.log(`[DEBUG] RolesGuard - user.territorioId: ${user.territorioId}`);
+
     if (territorioIdHeader && user.territorioId && user.territorioId !== territorioIdHeader) {
+      console.log(`[DEBUG] RolesGuard - Forbidden: Territorio mismatch`);
       throw new ForbiddenException('No tienes acceso a este territorio');
     }
 

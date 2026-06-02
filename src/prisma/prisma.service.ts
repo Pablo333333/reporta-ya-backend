@@ -14,13 +14,18 @@ export class PrismaService implements OnModuleInit, OnModuleDestroy {
   get territorio() { return this.client.territorio; }
   get reporte() { return this.client.reporte; }
   get comunicado() { return this.client.comunicado; }
-  get auditLog() { return this.client.auditLog; }
   get configSistema() { return this.client.configSistema; }
   get configCategoria() { return this.client.configCategoria; }
+  get configCampoExtra() { return this.client.configCampoExtra; }
   get configEstado() { return this.client.configEstado; }
   get configPrioridad() { return this.client.configPrioridad; }
   get logAccion() { return this.client.logAccion; }
   get puntosCiudadanos() { return this.client.puntosCiudadanos; }
+  get rol() { return this.client.rol; }
+  get permiso() { return this.client.permiso; }
+  get rolPermiso() { return this.client.rolPermiso; }
+  get historialReporte() { return this.client.historialReporte; }
+  get aprendizajeIa() { return this.client.aprendizajeIa; }
 
   async onModuleInit(): Promise<void> {
     const connectionString = process.env['DATABASE_URL'];
@@ -43,7 +48,7 @@ export class PrismaService implements OnModuleInit, OnModuleDestroy {
     this.client = baseClient.$extends({
       query: {
         $allModels: {
-          async $allOperations({ model, operation, args, query }) {
+          async $allOperations({ model, operation, args, query }: any) {
             const territorioId = TenantContext.territorioId;
             
             // Si hay un territorioId en el contexto, lo aplicamos a las consultas
@@ -63,7 +68,7 @@ export class PrismaService implements OnModuleInit, OnModuleDestroy {
                   args.data = { ...args.data, territorioId };
                 } else {
                   if (Array.isArray(args.data)) {
-                    args.data = args.data.map(item => ({ ...item, territorioId }));
+                    args.data = args.data.map((item: any) => ({ ...item, territorioId }));
                   }
                 }
               }
@@ -82,7 +87,7 @@ export class PrismaService implements OnModuleInit, OnModuleDestroy {
       this.logger.warn('⚠ La tabla "usuarios" está vacía — ejecutá: npx prisma db seed');
     } else {
       const emails = await this.client.usuario.findMany({ select: { email: true, rol: true } });
-      this.logger.log(`Usuarios registrados: ${emails.map(u => `${u.email} (${u.rol})`).join(', ')}`);
+      this.logger.log(`Usuarios registrados: ${emails.map(u => `${u.email} (${(u.rol as any)?.nombre || 'Sin Rol'})`).join(', ')}`);
     }
   }
 

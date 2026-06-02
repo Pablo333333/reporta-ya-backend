@@ -13,6 +13,7 @@ import { UsersModule } from './users/users.module';
 
 import { APP_INTERCEPTOR } from '@nestjs/core';
 import { TenantInterceptor } from './common/interceptors/tenant.interceptor';
+import { AuditInterceptor } from './common/interceptors/audit.interceptor';
 
 @Module({
   imports: [
@@ -31,6 +32,10 @@ import { TenantInterceptor } from './common/interceptors/tenant.interceptor';
     {
       provide: APP_INTERCEPTOR,
       useClass: TenantInterceptor,
+    },
+    {
+      provide: APP_INTERCEPTOR,
+      useClass: AuditInterceptor,
     },
   ],
 })
