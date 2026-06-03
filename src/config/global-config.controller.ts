@@ -149,7 +149,7 @@ export class GlobalConfigController {
 
   @Get('logs')
   @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('SUPERVISOR')
+  @Roles('SUPERVISOR', 'RESPONSABLE')
   getLogs(
     @Query('usuarioId') usuarioId?: string,
     @Query('accion') accion?: string,
@@ -168,14 +168,14 @@ export class GlobalConfigController {
 
   @Get('roles')
   @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('SUPERVISOR')
+  @Roles('SUPERVISOR', 'RESPONSABLE')
   getRoles() {
     return this.configService.getRoles();
   }
 
   @Get('permisos')
   @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('SUPERVISOR')
+  @Roles('SUPERVISOR', 'RESPONSABLE')
   getPermisos() {
     return this.configService.getPermisos();
   }

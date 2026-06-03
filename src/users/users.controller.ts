@@ -14,7 +14,7 @@ export class UsersController {
   constructor(private readonly usersService: UsersService) {}
 
   @Get()
-  @Roles('SUPERVISOR')
+  @Roles('SUPERVISOR, RESPONSABLE')
   findAll() {
     return this.usersService.findAll();
   }
