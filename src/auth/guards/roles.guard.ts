@@ -31,13 +31,17 @@ export class RolesGuard implements CanActivate {
       context.getClass(),
     ]);
 
-    // Si no se requiere ni rol ni permiso, permitimos el paso (asumiendo que JwtAuthGuard ya validó la autenticación)
+    // Si no se requiere ni rol ni permiso, permitimos el paso
     if (!requiredRoles?.length && !requiredPermissions?.length) return true;
 
     const request = context.switchToHttp().getRequest<any>();
     const userPayload = request.user;
 
+    // Si la ruta es pública (marcada con @Public) pero tiene @Roles/@Permissions,
+    // y no hay usuario, permitimos el paso solo si es anónimo y la lógica lo permite.
+    // Para POST /reports anónimo, userPayload será null.
     if (!userPayload) {
+      if (isPublic) return true;
       throw new ForbiddenException('Usuario no autenticado');
     }
 

@@ -65,10 +65,26 @@ export class PrismaService implements OnModuleInit, OnModuleDestroy {
                 args.where = { ...args.where, territorioId };
               } else if (['create', 'createMany'].includes(operation)) {
                 if (operation === 'create') {
-                  args.data = { ...args.data, territorioId };
+                  // Si el modelo es Reporte, usamos la relación 'territorio' en lugar del campo escalar
+                  if (model === 'Reporte') {
+                    args.data = { 
+                      ...args.data, 
+                      territorio: { connect: { id: territorioId } } 
+                    };
+                    delete args.data.territorioId;
+                  } else {
+                    args.data = { ...args.data, territorioId };
+                  }
                 } else {
                   if (Array.isArray(args.data)) {
-                    args.data = args.data.map((item: any) => ({ ...item, territorioId }));
+                    args.data = args.data.map((item: any) => {
+                      if (model === 'Reporte') {
+                        const newItem = { ...item, territorio: { connect: { id: territorioId } } };
+                        delete newItem.territorioId;
+                        return newItem;
+                      }
+                      return { ...item, territorioId };
+                    });
                   }
                 }
               }

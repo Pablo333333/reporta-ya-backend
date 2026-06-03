@@ -19,6 +19,7 @@ model Territorio {
   configSistema     ConfigSistema[]
   reportes          Reporte[]
   usuarios          Usuario[]
+  comunicados       Comunicado[]
 
   @@map("territorios")
 }
@@ -218,12 +219,14 @@ model HistorialReporte {
 }
 
 model Comunicado {
-  id                  String   @id @default(uuid())
+  id                  String      @id @default(uuid())
   mensaje             String
-  fechaPublicacion    DateTime @default(now())
+  fechaPublicacion    DateTime    @default(now())
   duracionRestriccion Int?
   responsableId       String
-  responsable         Usuario  @relation(fields: [responsableId], references: [id])
+  territorioId        String?
+  responsable         Usuario     @relation(fields: [responsableId], references: [id])
+  territorio          Territorio? @relation(fields: [territorioId], references: [id])
 
   @@map("comunicados")
 }

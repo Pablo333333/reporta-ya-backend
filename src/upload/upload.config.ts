@@ -18,6 +18,11 @@ const ALLOWED_MIME_TYPES = [
   'audio/m4a',
   'audio/mpeg',
   'audio/x-m4a',
+  'audio/3gp',
+  'audio/3gpp',
+  'audio/wav',
+  'audio/x-wav',
+  'application/octet-stream',
 ];
 
 // Configuración de Cloudinary parseando la URL completa
@@ -35,7 +40,7 @@ const storage = new CloudinaryStorage({
   params: {
     folder: 'reporta-ya',
     resource_type: 'auto',
-    allowed_formats: ['jpg', 'png', 'webp', 'jpeg', 'm4a', 'mp4', 'mp3'],
+    allowed_formats: ['jpg', 'png', 'webp', 'jpeg', 'm4a', 'mp4', 'mp3', 'wav'],
     public_id: (_req, file) => {
       const uniqueSuffix = `${Date.now()}-${Math.round(Math.random() * 1e6)}`;
       const prefix = file.fieldname === 'audio' ? 'audio' : 'photo';

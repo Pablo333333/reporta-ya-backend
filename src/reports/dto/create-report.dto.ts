@@ -2,11 +2,11 @@ import { Transform } from 'class-transformer';
 import { IsBoolean, IsNumber, IsOptional, IsString, IsUUID } from 'class-validator';
 
 export class CreateReportDto {
-  @IsUUID()
+  @IsString()
   categoriaId: string;
 
   @IsOptional()
-  @IsUUID()
+  @IsString()
   estadoId?: string;
 
   @IsUUID()
@@ -47,11 +47,24 @@ export class CreateReportDto {
   /**
    * Indica que el reporte se creó offline y se está sincronizando ahora.
    * El servidor registrará la fecha de sincronización en sincronizadoEn.
+   * FormData envía booleanos como strings 'true'/'false'.
    */
+  @Transform(({ value }) => {
+    if (value === 'true') return true;
+    if (value === 'false') return false;
+    return value;
+  })
   @IsOptional()
   @IsBoolean()
   esOffline?: boolean;
 
   @IsOptional()
+  @Transform(({ value }) => {
+    try {
+      return typeof value === 'string' ? JSON.parse(value) : value;
+    } catch {
+      return value;
+    }
+  })
   valoresCamposExtra?: any;
 }

@@ -7,6 +7,7 @@ import {
   Patch,
   Post,
   Query,
+  Headers,
   UploadedFile,
   UploadedFiles,
   UseGuards,
@@ -32,7 +33,7 @@ export class ReportsController {
   private readonly logger = new Logger(ReportsController.name);
   constructor(private readonly reportsService: ReportsService) {}
 
-  // POST /reports — Usuarios autenticados (REPORTANTE, RESPONSABLE, SUPERVISOR) o Invitados (Anónimos)
+  // POST /reports — Usuarios autenticados o Invitados (Anónimos)
   @Post()
   @Public()
   @UseGuards(OptionalJwtAuthGuard, RolesGuard)
@@ -49,12 +50,15 @@ export class ReportsController {
   ) {
     const photo = files?.photo?.[0];
     const audio = files?.audio?.[0];
+    console.log("🔍 [DEBUG] ReportsController.create - Usuario:", user ? user.email : 'Anónimo');
+    console.log("🔍 DTO Recibido:", JSON.stringify(dto, null, 2));
     return this.reportsService.create(dto, photo, audio, user);
   }
 
-  // GET /reports?estadoId=...&skip=0 — Todos los autenticados; REPORTANTE no ve SOLUCIONADO
+  // GET /reports?estadoId=...&skip=0 — Todos los autenticados o Invitados
   @Get()
-  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Public()
+  @UseGuards(OptionalJwtAuthGuard, RolesGuard)
   findAll(
     @Query('skip') skip?: string,
     @Query('estadoId') estadoId?: string,
@@ -124,6 +128,8 @@ export class ReportsController {
 
   /**
    * PATCH /reports/:id/status
+   * Unificado: Maneja tanto actualizaciones simples (JSON/FormData sin archivo) 
+   * como actualizaciones con evidencia (FormData con archivo).
    */
   @Patch(':id/status')
   @UseGuards(JwtAuthGuard, RolesGuard)
@@ -135,8 +141,12 @@ export class ReportsController {
     @Body() dto: UpdateReportStatusDto,
     @UploadedFile() fotoEvidencia: Express.Multer.File | undefined,
     @CurrentUser() user: JwtPayload,
+    @Headers('content-type') contentType: string,
   ) {
-    this.logger.debug(`[DEBUG] updateStatus - Payload recibido: ${JSON.stringify(dto)}`);
+    this.logger.debug(`[DEBUG] updateStatus - Content-Type: ${contentType}`);
+    this.logger.debug(`[DEBUG] updateStatus - Body: ${JSON.stringify(dto)}`);
+    this.logger.debug(`[DEBUG] updateStatus - Archivo: ${fotoEvidencia ? fotoEvidencia.originalname : 'Ninguno'}`);
+    
     return this.reportsService.updateStatus(id, dto, fotoEvidencia, user);
   }
 

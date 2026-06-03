@@ -39,8 +39,11 @@ export class ReportsService {
     audio: Express.Multer.File | undefined,
     usuario?: JwtPayload,
   ): Promise<Reporte> {
-    const fotoUrl = photo ? (photo as any).path : undefined;
-    const audioUrl = audio ? (audio as any).path : undefined;
+    const fotoUrl = photo ? (photo as any).path || (photo as any).secure_url : undefined;
+    const audioUrl = audio ? (audio as any).path || (audio as any).secure_url : undefined;
+    
+    this.logger.debug(`[DEBUG] create - photo path: ${(photo as any)?.path}, secure_url: ${(photo as any)?.secure_url}`);
+    this.logger.debug(`[DEBUG] create - fotoUrl final: ${fotoUrl}`);
     
     // Transcripción automática si hay audio
     let transcripcionVoz = dto.transcripcionVoz;
@@ -51,7 +54,16 @@ export class ReportsService {
       }
     }
 
-    const { esOffline, categoriaId, estadoId, prioridadId, valoresCamposExtra: rawValores, transcripcionVoz: _, ...reportData } = dto;
+    const { 
+      esOffline, 
+      categoriaId, 
+      estadoId, 
+      prioridadId, 
+      valoresCamposExtra: rawValores, 
+      transcripcionVoz: _, 
+      territorioId: __, // Excluimos territorioId plano para evitar conflictos con la relación
+      ...reportData 
+    } = dto as any;
 
     // Parsear valoresCamposExtra si llegan como string (desde FormData)
     let valoresCamposExtra = rawValores;
@@ -66,11 +78,14 @@ export class ReportsService {
     // 1. Obtener estado inicial (Pendiente por defecto)
     let finalEstadoId = estadoId;
     if (!finalEstadoId) {
-      const estadoPendiente = await this.prisma.configEstado.findFirst({
-        where: { nombre: { equals: 'Pendiente', mode: 'insensitive' } },
-      });
-      if (!estadoPendiente) throw new NotFoundException('Estado "Pendiente" no configurado');
-      finalEstadoId = estadoPendiente.id;
+      // Búsqueda directa ignorando el filtro de tenant para estados globales (territorioId: null)
+      const sqlResult = await (this.prisma as any).client.$queryRaw`SELECT id FROM "config_estados" WHERE "nombre" ILIKE 'Pendiente' LIMIT 1`;
+      
+      if (Array.isArray(sqlResult) && sqlResult.length > 0) {
+        finalEstadoId = sqlResult[0].id;
+      } else {
+        throw new NotFoundException('Estado "Pendiente" no configurado en la base de datos');
+      }
     }
 
     // 2. Lógica de EVENTO CRÍTICO: 2+ reportes en la misma zona/categoría (últimas 48h)
@@ -108,6 +123,11 @@ export class ReportsService {
       estado: { connect: { id: finalEstadoId } },
       prioridad: { connect: { id: finalPrioridadId } },
     } as any;
+
+    // DEFENSA CRÍTICA: Eliminamos campos que Prisma rechaza en el create
+    // El aislamiento de territorio lo maneja automáticamente la extensión de PrismaService
+    delete (data as any).territorioId;
+    delete (data as any).id;
 
     if (usuario?.sub) {
       data.reportante = { connect: { id: usuario.sub } };
@@ -242,7 +262,7 @@ export class ReportsService {
         prioridad: true,
       },
       orderBy: { fechaCreacion: 'desc' },
-      take: 20,
+      take: 1000, // Aumentado de 20 para permitir ver más reportes en el mapa
       skip,
     });
 
@@ -480,7 +500,10 @@ export class ReportsService {
       }
     }
 
-    const fotoEvidenciaUrl = fotoEvidencia ? (fotoEvidencia as any).path : undefined;
+    const fotoEvidenciaUrl = fotoEvidencia ? (fotoEvidencia as any).path || (fotoEvidencia as any).secure_url : undefined;
+
+    this.logger.debug(`[DEBUG] updateStatus - fotoEvidencia path: ${(fotoEvidencia as any)?.path}, secure_url: ${(fotoEvidencia as any)?.secure_url}`);
+    this.logger.debug(`[DEBUG] updateStatus - fotoEvidenciaUrl final: ${fotoEvidenciaUrl}`);
 
     const updatedReporte = await this.prisma.reporte.update({
       where: { id },

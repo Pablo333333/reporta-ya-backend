@@ -64,12 +64,19 @@ async function main(): Promise<void> {
   console.log('\n🌱   Iniciando seed de Reporta Ya (RBAC Dinámico)…\n');
 
   try {
+    // 0. Territorio de Prueba
+    const territorio = await prisma.territorio.upsert({
+      where: { id: '1' },
+      update: { nombre: 'Territorio de Prueba' },
+      create: { id: '1', nombre: 'Territorio de Prueba', descripcion: 'Territorio inicial para desarrollo' },
+    });
+
     // 1. Configuración Global
     for (const config of SEED_CONFIGS) {
       await prisma.configSistema.upsert({
         where: { clave: config.clave },
-        update: { valor: config.valor, descripcion: config.descripcion },
-        create: config,
+        update: { valor: config.valor, descripcion: config.descripcion, territorioId: territorio.id },
+        create: { ...config, territorioId: territorio.id },
       });
     }
 
@@ -77,8 +84,8 @@ async function main(): Promise<void> {
     for (const estado of SEED_ESTADOS) {
       await prisma.configEstado.upsert({
         where: { nombre: estado.nombre },
-        update: { color: estado.color, esFinal: estado.esFinal, orden: estado.orden },
-        create: estado,
+        update: { color: estado.color, esFinal: estado.esFinal, orden: estado.orden, territorioId: territorio.id },
+        create: { ...estado, territorioId: territorio.id },
       });
     }
 
@@ -86,8 +93,8 @@ async function main(): Promise<void> {
     for (const prioridad of SEED_PRIORIDADES) {
       await prisma.configPrioridad.upsert({
         where: { nombre: prioridad.nombre },
-        update: { color: prioridad.color, nivel: prioridad.nivel },
-        create: prioridad,
+        update: { color: prioridad.color, nivel: prioridad.nivel, territorioId: territorio.id },
+        create: { ...prioridad, territorioId: territorio.id },
       });
     }
 
@@ -95,8 +102,8 @@ async function main(): Promise<void> {
     for (const categoria of SEED_CATEGORIAS) {
       await prisma.configCategoria.upsert({
         where: { nombre: categoria.nombre },
-        update: { descripcion: categoria.descripcion, color: categoria.color, icono: categoria.icono },
-        create: categoria,
+        update: { descripcion: categoria.descripcion, color: categoria.color, icono: categoria.icono, territorioId: territorio.id },
+        create: { ...categoria, territorioId: territorio.id },
       });
     }
 
@@ -167,8 +174,8 @@ async function main(): Promise<void> {
       
       await prisma.usuario.upsert({
         where: { email: u.email },
-        update: { password: hashedPassword, rolId: rol!.id },
-        create: { email: u.email, password: hashedPassword, rolId: rol!.id },
+        update: { password: hashedPassword, rolId: rol!.id, territorioId: territorio.id },
+        create: { email: u.email, password: hashedPassword, rolId: rol!.id, territorioId: territorio.id },
       });
     }
 
