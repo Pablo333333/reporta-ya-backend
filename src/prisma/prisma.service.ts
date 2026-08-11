@@ -26,6 +26,7 @@ export class PrismaService implements OnModuleInit, OnModuleDestroy {
   get rolPermiso() { return this.client.rolPermiso; }
   get historialReporte() { return this.client.historialReporte; }
   get aprendizajeIa() { return this.client.aprendizajeIa; }
+  get configMensajeAuto() { return this.client.configMensajeAuto; }
 
   async onModuleInit(): Promise<void> {
     const connectionString = process.env['DATABASE_URL'];
@@ -55,7 +56,7 @@ export class PrismaService implements OnModuleInit, OnModuleDestroy {
             // Solo si el modelo tiene el campo territorioId (según schema.prisma)
             const modelsWithTenant = [
               'Usuario', 'Reporte', 'Comunicado', 'ConfigSistema', 
-              'ConfigCategoria', 'ConfigEstado', 'ConfigPrioridad'
+              'ConfigCategoria', 'ConfigEstado', 'ConfigPrioridad', 'ConfigMensajeAuto'
             ];
 
             if (territorioId && modelsWithTenant.includes(model)) {

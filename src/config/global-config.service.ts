@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { ConfigCategoria, ConfigEstado, ConfigPrioridad, ConfigSistema } from '@prisma/client';
 
@@ -15,17 +15,14 @@ export class GlobalConfigService {
   }
 
   async updateSistema(clave: string, valor: string): Promise<ConfigSistema> {
-    const config = await this.prisma.configSistema.findUnique({
+    return this.prisma.configSistema.upsert({
       where: { clave },
-    });
-
-    if (!config) {
-      throw new NotFoundException(`Configuración con clave "${clave}" no encontrada`);
-    }
-
-    return this.prisma.configSistema.update({
-      where: { clave },
-      data: { valor },
+      update: { valor },
+      create: {
+        clave,
+        valor,
+        descripcion: `Configuración ${clave}`,
+      },
     });
   }
 
@@ -168,5 +165,53 @@ export class GlobalConfigService {
     return this.prisma.rolPermiso.createMany({
       data,
     });
+  }
+
+  // ─── Mensajes automáticos ──────────────────────────────────────────────────
+
+  async getMensajesAuto() {
+    return this.prisma.configMensajeAuto.findMany({
+      orderBy: { tipo: 'asc' },
+    });
+  }
+
+  async createMensajeAuto(data: {
+    tipo: string;
+    plantilla: string;
+    activo?: boolean;
+    descripcion?: string;
+  }) {
+    return this.prisma.configMensajeAuto.create({
+      data: {
+        tipo: data.tipo.trim().toUpperCase(),
+        plantilla: data.plantilla,
+        activo: data.activo ?? true,
+        descripcion: data.descripcion,
+      },
+    });
+  }
+
+  async updateMensajeAuto(
+    id: string,
+    data: Partial<{
+      tipo: string;
+      plantilla: string;
+      activo: boolean;
+      descripcion: string;
+    }>,
+  ) {
+    return this.prisma.configMensajeAuto.update({
+      where: { id },
+      data: {
+        ...(data.tipo && { tipo: data.tipo.trim().toUpperCase() }),
+        ...(data.plantilla !== undefined && { plantilla: data.plantilla }),
+        ...(data.activo !== undefined && { activo: data.activo }),
+        ...(data.descripcion !== undefined && { descripcion: data.descripcion }),
+      },
+    });
+  }
+
+  async deleteMensajeAuto(id: string) {
+    return this.prisma.configMensajeAuto.delete({ where: { id } });
   }
 }

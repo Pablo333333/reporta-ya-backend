@@ -1,7 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../prisma/prisma.service';
-import axios from 'axios';
 import OpenAI from 'openai';
 
 export type ClasificacionMetodo = 'keywords' | 'llm' | 'hibrido' | 'fallback';
@@ -12,7 +11,7 @@ export interface ClasificacionResultado {
   razon: string;
   confianza: number;
   metodo: ClasificacionMetodo;
-  provider?: 'gemini' | 'openai' | 'none';
+  provider?: 'openai' | 'none';
 }
 
 interface CategoriaActiva {
@@ -35,7 +34,7 @@ export class LlmService {
 
   /**
    * Clasifica un reporte con pipeline híbrido:
-   * keywords dinámicas (catálogo BD) → LLM (Gemini/OpenAI) → fallback fail-open.
+   * keywords dinámicas (catálogo BD) → OpenAI (GPT) → fallback fail-open.
    */
   async clasificarReporte(texto: string): Promise<ClasificacionResultado> {
     const textoLimpio = (texto || '').trim();
@@ -71,7 +70,7 @@ export class LlmService {
     });
 
     try {
-      const llm = await this.llamarLlm(
+      const llm = await this.llamarOpenAi(
         textoLimpio,
         categorias,
         prioridades.map((p) => p.nombre),
@@ -85,7 +84,7 @@ export class LlmService {
       if (!llm) {
         return keywordHit
           ? { ...keywordHit, metodo: 'keywords', provider: 'none' }
-          : this.fallbackResult(categorias, prioridades, 'LLM no disponible; se usó fallback.');
+          : this.fallbackResult(categorias, prioridades, 'OpenAI no disponible; se usó fallback.');
       }
 
       const catMatch = this.matchCategoria(llm.categoria, categorias);
@@ -98,7 +97,7 @@ export class LlmService {
           razon: llm.razon,
           confianza: Math.min(0.95, Math.max(llm.confianza, keywordHit.confianza + 0.1)),
           metodo: 'hibrido',
-          provider: llm.provider,
+          provider: 'openai',
         };
       }
 
@@ -108,13 +107,13 @@ export class LlmService {
         razon: llm.razon,
         confianza: catMatch ? llm.confianza : Math.max(0.35, keywordHit?.confianza ?? 0.3),
         metodo: keywordHit ? 'hibrido' : 'llm',
-        provider: llm.provider,
+        provider: 'openai',
       };
     } catch (error) {
       this.logger.warn(`Fail-open en clasificarReporte: ${(error as Error).message}`);
       return keywordHit
         ? { ...keywordHit, metodo: 'keywords', provider: 'none' }
-        : this.fallbackResult(categorias, prioridades, 'Error/timeout LLM; fallback aplicado.');
+        : this.fallbackResult(categorias, prioridades, 'Error/timeout OpenAI; fallback aplicado.');
     }
   }
 
@@ -122,13 +121,10 @@ export class LlmService {
     const flag = await this.prisma.configSistema.findUnique({
       where: { clave: 'IA_CLASIFICACION_ENABLED' },
     });
-    if (!flag) return true; // default ON si no está seedado
+    if (!flag) return true;
     return ['1', 'true', 'yes', 'on'].includes(flag.valor.toLowerCase());
   }
 
-  /**
-   * Keywords derivadas del nombre/descripción de cada categoría activa.
-   */
   private clasificarPorKeywords(
     texto: string,
     categorias: CategoriaActiva[],
@@ -185,7 +181,7 @@ export class LlmService {
       .replace(/[\u0300-\u036f]/g, '');
   }
 
-  private async llamarLlm(
+  private async llamarOpenAi(
     texto: string,
     categorias: CategoriaActiva[],
     prioridades: string[],
@@ -195,32 +191,34 @@ export class LlmService {
     prioridad: string;
     razon: string;
     confianza: number;
-    provider: 'gemini' | 'openai';
   } | null> {
-    const geminiKey = this.configService.get<string>('GEMINI_API_KEY');
     const openaiKey = this.configService.get<string>('OPENAI_API_KEY');
-
-    if (!geminiKey && !openaiKey) {
-      this.logger.warn('Sin GEMINI_API_KEY ni OPENAI_API_KEY; se omite LLM.');
+    if (!openaiKey) {
+      this.logger.warn('Sin OPENAI_API_KEY; se omite clasificación LLM.');
       return null;
     }
 
     const prompt = this.buildPrompt(texto, categorias, prioridades, ejemplos);
+    const client = new OpenAI({ apiKey: openaiKey, timeout: LLM_TIMEOUT_MS });
+    const model =
+      this.configService.get<string>('OPENAI_CLASSIFY_MODEL') || 'gpt-4o-mini';
 
-    if (geminiKey) {
-      try {
-        return await this.callGemini(geminiKey, prompt);
-      } catch (err) {
-        this.logger.warn(`Gemini falló: ${(err as Error).message}`);
-        if (!openaiKey) throw err;
-      }
-    }
+    const completion = await client.chat.completions.create({
+      model,
+      temperature: 0.2,
+      response_format: { type: 'json_object' },
+      messages: [
+        {
+          role: 'system',
+          content:
+            'Clasificas reportes ciudadanos. Respondes únicamente JSON válido.',
+        },
+        { role: 'user', content: prompt },
+      ],
+    });
 
-    if (openaiKey) {
-      return await this.callOpenAi(openaiKey, prompt);
-    }
-
-    return null;
+    const raw = completion.choices[0]?.message?.content || '{}';
+    return this.parseJsonResponse(raw);
   }
 
   private buildPrompt(
@@ -258,57 +256,6 @@ Texto del reporte a clasificar:
 """${texto.substring(0, 1500)}"""`;
   }
 
-  private async callGemini(apiKey: string, prompt: string) {
-    const model =
-      this.configService.get<string>('GEMINI_MODEL') || 'gemini-2.0-flash';
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
-
-    const { data } = await axios.post(
-      url,
-      {
-        contents: [{ parts: [{ text: prompt }] }],
-        generationConfig: {
-          temperature: 0.2,
-          responseMimeType: 'application/json',
-        },
-      },
-      {
-        params: { key: apiKey },
-        timeout: LLM_TIMEOUT_MS,
-      },
-    );
-
-    const raw =
-      data?.candidates?.[0]?.content?.parts?.map((p: any) => p.text).join('') ||
-      '';
-    const parsed = this.parseJsonResponse(raw);
-    return { ...parsed, provider: 'gemini' as const };
-  }
-
-  private async callOpenAi(apiKey: string, prompt: string) {
-    const client = new OpenAI({ apiKey, timeout: LLM_TIMEOUT_MS });
-    const model =
-      this.configService.get<string>('OPENAI_CLASSIFY_MODEL') || 'gpt-4o-mini';
-
-    const completion = await client.chat.completions.create({
-      model,
-      temperature: 0.2,
-      response_format: { type: 'json_object' },
-      messages: [
-        {
-          role: 'system',
-          content:
-            'Clasificas reportes ciudadanos. Respondes únicamente JSON válido.',
-        },
-        { role: 'user', content: prompt },
-      ],
-    });
-
-    const raw = completion.choices[0]?.message?.content || '{}';
-    const parsed = this.parseJsonResponse(raw);
-    return { ...parsed, provider: 'openai' as const };
-  }
-
   private parseJsonResponse(raw: string): {
     categoria: string;
     prioridad: string;
@@ -328,7 +275,7 @@ Texto del reporte a clasificar:
     return {
       categoria: String(parsed.categoria || ''),
       prioridad: String(parsed.prioridad || 'Baja'),
-      razon: String(parsed.razon || 'Clasificación por LLM.'),
+      razon: String(parsed.razon || 'Clasificación por OpenAI.'),
       confianza: Number.isFinite(confianzaNum)
         ? Math.min(1, Math.max(0, confianzaNum))
         : 0.6,
@@ -347,7 +294,6 @@ Texto del reporte a clasificar:
     const n = this.normalize(nombre);
     const hit = prioridades.find((p) => this.normalize(p) === n);
     if (hit) return hit;
-    // aliases comunes del LLM
     if (n.includes('alta') || n.includes('urgent')) {
       return prioridades.find((p) => /urgent|alta/i.test(p)) || prioridades[prioridades.length - 1];
     }

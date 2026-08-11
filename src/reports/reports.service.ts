@@ -62,7 +62,8 @@ export class ReportsService {
       prioridadId, 
       valoresCamposExtra: rawValores, 
       transcripcionVoz: _, 
-      territorioId: __, // Excluimos territorioId plano para evitar conflictos con la relación
+      territorioId: __,
+      categoriaSugeridaId,
       ...reportData 
     } = dto as any;
 
@@ -89,25 +90,32 @@ export class ReportsService {
       }
     }
 
-    // 2. Lógica de EVENTO CRÍTICO: 2+ reportes en la misma zona/categoría (últimas 48h)
+    // 2. EVENTO CRÍTICO: umbrales desde ConfigSistema (defaults: 2 reportes / 48h)
     let finalPrioridadId = prioridadId;
     let esEventoCritico = false;
-    const cuarentaYOchoHorasAtras = new Date(Date.now() - 48 * 60 * 60 * 1000);
+    const [minReportesCritico, ventanaHorasCritico, puntosCrear] = await Promise.all([
+      this.getConfigNumber('EVENTO_CRITICO_MIN_REPORTES', 2),
+      this.getConfigNumber('EVENTO_CRITICO_VENTANA_HORAS', 48),
+      this.getConfigNumber('PUNTOS_CREAR_REPORTE', 5),
+    ]);
+    const ventanaCriticoDesde = new Date(
+      Date.now() - Math.max(1, ventanaHorasCritico) * 60 * 60 * 1000,
+    );
 
     if (reportData.zona) {
       const reportesSimilares = await this.prisma.reporte.count({
         where: {
           zona: reportData.zona,
           categoriaId,
-          fechaCreacion: { gte: cuarentaYOchoHorasAtras },
-          estado: { esFinal: false } // No solucionados
-        }
+          fechaCreacion: { gte: ventanaCriticoDesde },
+          estado: { esFinal: false }, // No solucionados
+        },
       });
 
-      if (reportesSimilares >= 2) {
+      if (reportesSimilares >= Math.max(1, minReportesCritico)) {
         esEventoCritico = true;
         const prioridadUrgente = await this.prisma.configPrioridad.findFirst({
-          where: { nombre: { equals: 'Urgente', mode: 'insensitive' } }
+          where: { nombre: { equals: 'Urgente', mode: 'insensitive' } },
         });
         if (prioridadUrgente) finalPrioridadId = prioridadUrgente.id;
       }
@@ -144,15 +152,39 @@ export class ReportsService {
       }
     });
 
-    // 3. Lógica de Gamificación: +5 puntos para el REPORTANTE
-    if (usuario?.sub && usuario.rol === 'REPORTANTE') {
+    // 3. Gamificación: puntos configurables (ConfigSistema.PUNTOS_CREAR_REPORTE)
+    if (usuario?.sub && usuario.rol === 'REPORTANTE' && puntosCrear > 0) {
       await this.prisma.puntosCiudadanos.create({
         data: {
           usuarioId: usuario.sub,
-          puntos: 5,
+          puntos: puntosCrear,
           motivo: `Reporte creado: ${reporte.id}`,
         },
       });
+    }
+
+    // 3b. Aprendizaje continuo: ciudadano corrigió/descartó la sugerencia de IA
+    if (categoriaSugeridaId && categoriaSugeridaId !== categoriaId) {
+      try {
+        const [sugerida, real] = await Promise.all([
+          this.prisma.configCategoria.findUnique({ where: { id: categoriaSugeridaId } }),
+          this.prisma.configCategoria.findUnique({ where: { id: categoriaId } }),
+        ]);
+        if (sugerida && real) {
+          await this.prisma.aprendizajeIa.create({
+            data: {
+              textoReporte: reporte.comentario || reporte.transcripcionVoz || 'Sin texto',
+              categoriaSugerida: sugerida.nombre,
+              categoriaReal: real.nombre,
+              corregido: true,
+            },
+          });
+        }
+      } catch (err) {
+        this.logger.warn(
+          `No se pudo registrar aprendizaje ciudadano: ${(err as Error).message}`,
+        );
+      }
     }
 
     // Auditoría inicial
@@ -338,12 +370,13 @@ export class ReportsService {
         include: { reportante: true }
       });
 
-      // Gamificación: +15 puntos por validación exitosa
-      if (updated.reportanteId) {
+      // Gamificación: puntos configurables al validar solución
+      const puntosValidar = await this.getConfigNumber('PUNTOS_VALIDAR_SOLUCION', 15);
+      if (updated.reportanteId && puntosValidar > 0) {
         await this.prisma.puntosCiudadanos.create({
           data: {
             usuarioId: updated.reportanteId,
-            puntos: 15,
+            puntos: puntosValidar,
             motivo: `Validación exitosa de reporte: ${reporteId}`,
           },
         });
@@ -381,7 +414,7 @@ export class ReportsService {
   }
 
   /**
-   * Motor híbrido de clasificación: keywords dinámicas + LLM (Gemini/OpenAI) + fallback.
+   * Motor híbrido de clasificación: keywords dinámicas + OpenAI (GPT) + fallback.
    */
   async sugerirCategoria(texto: string): Promise<{
     categoriaId: string | undefined;
@@ -580,6 +613,39 @@ export class ReportsService {
       .sort(([a], [b]) => a.localeCompare(b))
       .map(([fecha, total]) => ({ fecha, total }));
 
+    // Cruce tipología × zona (problemas por zona)
+    const matrizMap = new Map<
+      string,
+      {
+        zona: string;
+        categoriaId: string;
+        categoriaNombre: string;
+        total: number;
+        abiertos: number;
+      }
+    >();
+    for (const r of reportes) {
+      const zona = r.zona?.trim() || 'Sin zona';
+      const key = `${zona}||${r.categoriaId}`;
+      const entry = matrizMap.get(key) || {
+        zona,
+        categoriaId: r.categoriaId,
+        categoriaNombre: r.categoria.nombre,
+        total: 0,
+        abiertos: 0,
+      };
+      entry.total += 1;
+      if (!r.estado.esFinal) entry.abiertos += 1;
+      matrizMap.set(key, entry);
+    }
+
+    const problemasPorZona = Array.from(matrizMap.values()).sort(
+      (a, b) =>
+        a.zona.localeCompare(b.zona) ||
+        b.total - a.total ||
+        a.categoriaNombre.localeCompare(b.categoriaNombre),
+    );
+
     return {
       periodo: {
         from: fromDate.toISOString(),
@@ -622,6 +688,7 @@ export class ReportsService {
         }))
         .sort((a, b) => b.resueltos - a.resueltos || a.reaperturas - b.reaperturas),
       tendenciaDiaria,
+      problemasPorZona,
       // metadata útil para UI
       estadosDisponibles: estados.map((e) => ({
         id: e.id,
@@ -774,6 +841,12 @@ export class ReportsService {
     this.logger.debug(`[DEBUG] updateStatus - fotoEvidencia path: ${(fotoEvidencia as any)?.path}, secure_url: ${(fotoEvidencia as any)?.secure_url}`);
     this.logger.debug(`[DEBUG] updateStatus - fotoEvidenciaUrl final: ${fotoEvidenciaUrl}`);
 
+    // Al marcar Solucionado: exigir validación ciudadana (reset flag)
+    const esSolucionado =
+      !!nuevoEstado &&
+      (nuevoEstado.esFinal ||
+        nuevoEstado.nombre.toLowerCase() === 'solucionado');
+
     const updatedReporte = await this.prisma.reporte.update({
       where: { id },
       data: {
@@ -781,6 +854,12 @@ export class ReportsService {
         ...(dto.categoriaId && { categoriaId: dto.categoriaId }),
         ...(dto.comentarioResolucion && { comentarioResolucion: dto.comentarioResolucion }),
         ...(fotoEvidenciaUrl && { fotoEvidenciaUrl }),
+        ...(esSolucionado && { validadoCiudadano: false }),
+      },
+      include: {
+        reportante: true,
+        categoria: true,
+        estado: true,
       },
     });
 
@@ -794,6 +873,24 @@ export class ReportsService {
       },
     });
 
+    // Avisar al reportante para que valide la solución
+    if (esSolucionado && updatedReporte.reportante?.pushToken) {
+      const categoriaNombre =
+        updatedReporte.categoria?.nombre || reporte.categoria?.nombre || 'tu reporte';
+      this.notificationsService
+        .sendPushNotification(
+          updatedReporte.reportante.pushToken,
+          '¿Se resolvió tu reporte?',
+          `Tu reporte sobre "${categoriaNombre}" fue marcado como solucionado. Abrí Mis Reportes y confirmá o reabrí el caso.`,
+          { reporteId: id, tipo: 'validacion_ciudadana' },
+        )
+        .catch((err) =>
+          this.logger.warn(
+            `Push validación ciudadana falló: ${(err as Error).message}`,
+          ),
+        );
+    }
+
     return updatedReporte;
   }
 
@@ -803,5 +900,19 @@ export class ReportsService {
       include: { categoria: true, estado: true, prioridad: true },
       orderBy: { fechaCreacion: 'desc' },
     });
+  }
+
+  /**
+   * Lee un número desde ConfigSistema con fallback seguro.
+   */
+  private async getConfigNumber(clave: string, defaultValue: number): Promise<number> {
+    try {
+      const row = await this.prisma.configSistema.findUnique({ where: { clave } });
+      if (!row?.valor) return defaultValue;
+      const parsed = Number(row.valor);
+      return Number.isFinite(parsed) ? parsed : defaultValue;
+    } catch {
+      return defaultValue;
+    }
   }
 }

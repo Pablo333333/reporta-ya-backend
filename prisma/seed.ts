@@ -25,7 +25,46 @@ const SEED_CONFIGS = [
   { clave: 'COLOR_PRIMARIO', valor: '#007AFF', descripcion: 'Color hexadecimal de la interfaz móvil' },
   { clave: 'PESO_GRAVEDAD', valor: '0.6', descripcion: 'Peso de la gravedad en la fórmula de riesgo (0-1)' },
   { clave: 'PESO_FRECUENCIA', valor: '0.4', descripcion: 'Peso de la frecuencia en la fórmula de riesgo (0-1)' },
-  { clave: 'IA_CLASIFICACION_ENABLED', valor: 'true', descripcion: 'Activa clasificación LLM (Gemini/OpenAI) con fallback a keywords' },
+  { clave: 'IA_CLASIFICACION_ENABLED', valor: 'true', descripcion: 'Activa clasificación OpenAI (GPT) con fallback a keywords' },
+  // Reglas de negocio: eventos críticos y gamificación
+  { clave: 'EVENTO_CRITICO_MIN_REPORTES', valor: '2', descripcion: 'Cantidad mínima de reportes abiertos (misma zona+categoría) para marcar evento crítico' },
+  { clave: 'EVENTO_CRITICO_VENTANA_HORAS', valor: '48', descripcion: 'Ventana temporal (horas) para acumular reportes similares como evento crítico' },
+  { clave: 'PUNTOS_CREAR_REPORTE', valor: '5', descripcion: 'Puntos otorgados al reportante al crear un reporte' },
+  { clave: 'PUNTOS_VALIDAR_SOLUCION', valor: '15', descripcion: 'Puntos otorgados al confirmar (validar) una solución ciudadana' },
+  { clave: 'SLA_HORAS_LIMITE', valor: '48', descripcion: 'Horas máximas sin resolución antes de marcar SLA incumplido' },
+];
+
+const SEED_MENSAJES_AUTO = [
+  {
+    tipo: 'NUEVO_REPORTE',
+    plantilla: 'Nuevo reporte: {{categoria}}. Revisá el mapa.',
+    descripcion: 'Push a responsables al crear un reporte',
+  },
+  {
+    tipo: 'EVENTO_CRITICO',
+    plantilla: '🚨 EVENTO CRÍTICO en zona {{zona}} ({{categoria}}). Intervención prioritaria.',
+    descripcion: 'Alerta por acumulación de reportes similares',
+  },
+  {
+    tipo: 'PRIORIDAD_ALTA',
+    plantilla: '⚠️ Reporte urgente en zona {{zona}}: {{categoria}}.',
+    descripcion: 'Alerta por prioridad alta',
+  },
+  {
+    tipo: 'COMUNICADO',
+    plantilla: '📢 Comunicado{{zonaSuffix}}: {{mensaje}}',
+    descripcion: 'Push masivo al publicar un comunicado',
+  },
+  {
+    tipo: 'VALIDACION_CIUDADANA',
+    plantilla: 'Tu reporte sobre "{{categoria}}" fue marcado como solucionado. Confirmá o reabrí en Mis Reportes.',
+    descripcion: 'Invitación a validar solución',
+  },
+  {
+    tipo: 'SLA_INCUMPLIDO',
+    plantilla: '⏱ SLA incumplido: reporte {{categoria}} en {{zona}} lleva más de {{horas}}h sin resolución.',
+    descripcion: 'Alerta a responsables por vencimiento de SLA',
+  },
 ];
 
 const SEED_ESTADOS = [
@@ -79,6 +118,27 @@ async function main(): Promise<void> {
         update: { valor: config.valor, descripcion: config.descripcion, territorioId: territorio.id },
         create: { ...config, territorioId: territorio.id },
       });
+    }
+
+    // 1b. Plantillas de mensajes automáticos
+    for (const msg of SEED_MENSAJES_AUTO) {
+      const existing = await prisma.configMensajeAuto.findFirst({
+        where: { tipo: msg.tipo, territorioId: territorio.id },
+      });
+      if (existing) {
+        await prisma.configMensajeAuto.update({
+          where: { id: existing.id },
+          data: {
+            plantilla: msg.plantilla,
+            descripcion: msg.descripcion,
+            activo: true,
+          },
+        });
+      } else {
+        await prisma.configMensajeAuto.create({
+          data: { ...msg, activo: true, territorioId: territorio.id },
+        });
+      }
     }
 
     // 2. Estados

@@ -67,4 +67,12 @@ export class CreateReportDto {
     }
   })
   valoresCamposExtra?: any;
+
+  /**
+   * Categoría que sugirió la IA antes de la elección final del ciudadano.
+   * Si difiere de categoriaId, se registra en aprendizaje_ia.
+   */
+  @IsOptional()
+  @IsString()
+  categoriaSugeridaId?: string;
 }

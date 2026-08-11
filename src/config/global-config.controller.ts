@@ -190,4 +190,37 @@ export class GlobalConfigController {
   ) {
     return this.configService.updateRolPermisos(id, permisoIds);
   }
+
+  // ─── Mensajes automáticos ──────────────────────────────────────────────────
+
+  @Get('mensajes-auto')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('RESPONSABLE', 'SUPERVISOR')
+  getMensajesAuto() {
+    return this.configService.getMensajesAuto();
+  }
+
+  @Post('mensajes-auto')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('RESPONSABLE', 'SUPERVISOR')
+  @AuditAction('CREATE_AUTO_MESSAGE')
+  createMensajeAuto(@Body() data: any) {
+    return this.configService.createMensajeAuto(data);
+  }
+
+  @Patch('mensajes-auto/:id')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('RESPONSABLE', 'SUPERVISOR')
+  @AuditAction('UPDATE_AUTO_MESSAGE')
+  updateMensajeAuto(@Param('id') id: string, @Body() data: any) {
+    return this.configService.updateMensajeAuto(id, data);
+  }
+
+  @Delete('mensajes-auto/:id')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('SUPERVISOR')
+  @AuditAction('DELETE_AUTO_MESSAGE')
+  deleteMensajeAuto(@Param('id') id: string) {
+    return this.configService.deleteMensajeAuto(id);
+  }
 }

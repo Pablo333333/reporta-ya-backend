@@ -27,11 +27,15 @@ import { multerOptions } from '../upload/upload.config';
 import { CreateReportDto } from './dto/create-report.dto';
 import { UpdateReportStatusDto } from './dto/update-report-status.dto';
 import { ReportsService } from './reports.service';
+import { SlaMonitorService } from './sla-monitor.service';
 
 @Controller('reports')
 export class ReportsController {
   private readonly logger = new Logger(ReportsController.name);
-  constructor(private readonly reportsService: ReportsService) {}
+  constructor(
+    private readonly reportsService: ReportsService,
+    private readonly slaMonitorService: SlaMonitorService,
+  ) {}
 
   // POST /reports — Usuarios autenticados o Invitados (Anónimos)
   @Post()
@@ -129,6 +133,18 @@ export class ReportsController {
   @Roles('RESPONSABLE', 'SUPERVISOR')
   getAnalytics(@Query('from') from?: string, @Query('to') to?: string) {
     return this.reportsService.getAnalytics(from, to);
+  }
+
+  /**
+   * POST /reports/check-sla
+   * Ejecuta manualmente el chequeo de SLA (también corre periódico en background).
+   */
+  @Post('check-sla')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('RESPONSABLE', 'SUPERVISOR')
+  @AuditAction('CHECK_SLA')
+  checkSla() {
+    return this.slaMonitorService.verificarSla();
   }
 
   // GET /reports/:id
