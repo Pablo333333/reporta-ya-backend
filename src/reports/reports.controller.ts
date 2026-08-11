@@ -102,11 +102,12 @@ export class ReportsController {
 
   /**
    * GET /reports/suggest-category
-   * Sugiere una categoría basada en el texto descriptivo.
+   * Sugiere categoría/prioridad (keywords + LLM + fallback).
    */
   @Get('suggest-category')
+  @Public()
   suggestCategory(@Query('text') text: string) {
-    return this.reportsService.sugerirCategoria(text);
+    return this.reportsService.sugerirCategoria(text || '');
   }
 
   /**
@@ -117,6 +118,17 @@ export class ReportsController {
   @Roles('RESPONSABLE', 'SUPERVISOR')
   getStats() {
     return this.reportsService.getStats();
+  }
+
+  /**
+   * GET /reports/analytics?from=&to=
+   * KPIs, tiempos de atención (historial), desglose categoría/zona y ranking responsables.
+   */
+  @Get('analytics')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('RESPONSABLE', 'SUPERVISOR')
+  getAnalytics(@Query('from') from?: string, @Query('to') to?: string) {
+    return this.reportsService.getAnalytics(from, to);
   }
 
   // GET /reports/:id

@@ -25,6 +25,7 @@ const SEED_CONFIGS = [
   { clave: 'COLOR_PRIMARIO', valor: '#007AFF', descripcion: 'Color hexadecimal de la interfaz móvil' },
   { clave: 'PESO_GRAVEDAD', valor: '0.6', descripcion: 'Peso de la gravedad en la fórmula de riesgo (0-1)' },
   { clave: 'PESO_FRECUENCIA', valor: '0.4', descripcion: 'Peso de la frecuencia en la fórmula de riesgo (0-1)' },
+  { clave: 'IA_CLASIFICACION_ENABLED', valor: 'true', descripcion: 'Activa clasificación LLM (Gemini/OpenAI) con fallback a keywords' },
 ];
 
 const SEED_ESTADOS = [

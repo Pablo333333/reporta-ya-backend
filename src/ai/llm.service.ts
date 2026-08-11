@@ -1,6 +1,28 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../prisma/prisma.service';
+import axios from 'axios';
+import OpenAI from 'openai';
+
+export type ClasificacionMetodo = 'keywords' | 'llm' | 'hibrido' | 'fallback';
+
+export interface ClasificacionResultado {
+  categoria: string;
+  prioridad: string;
+  razon: string;
+  confianza: number;
+  metodo: ClasificacionMetodo;
+  provider?: 'gemini' | 'openai' | 'none';
+}
+
+interface CategoriaActiva {
+  id: string;
+  nombre: string;
+  descripcion: string | null;
+}
+
+const LLM_TIMEOUT_MS = 6_000;
+const APRENDIZAJE_LIMIT = 8;
 
 @Injectable()
 export class LlmService {
@@ -12,52 +34,341 @@ export class LlmService {
   ) {}
 
   /**
-   * Clasifica un reporte utilizando un LLM (OpenAI/Gemini).
-   * @param texto El texto del reporte (comentario o transcripción).
-   * @returns Un objeto con la categoría y prioridad sugerida.
+   * Clasifica un reporte con pipeline híbrido:
+   * keywords dinámicas (catálogo BD) → LLM (Gemini/OpenAI) → fallback fail-open.
    */
-  async clasificarReporte(texto: string): Promise<{ categoria: string; prioridad: string; razon: string }> {
-    const apiKey = this.configService.get<string>('OPENAI_API_KEY') || this.configService.get<string>('GEMINI_API_KEY');
-
-    // Fetch dinámico de categorías y estados activos para el prompt
-    const [categorias, estados] = await Promise.all([
+  async clasificarReporte(texto: string): Promise<ClasificacionResultado> {
+    const textoLimpio = (texto || '').trim();
+    const [categorias, prioridades, iaEnabled] = await Promise.all([
       this.prisma.configCategoria.findMany({ where: { activo: true } }),
-      this.prisma.configEstado.findMany({ where: { activo: true } }),
+      this.prisma.configPrioridad.findMany({ where: { activo: true } }),
+      this.isClasificacionEnabled(),
     ]);
 
-    const contexto = `
-      Categorías disponibles: ${categorias.map(c => c.nombre).join(', ')}.
-      Estados del flujo: ${estados.map(e => e.nombre).join(', ')}.
-      Instrucción: Clasifica el reporte en una de las categorías y sugiere una prioridad (Baja, Media, Alta, Urgente).
-    `;
-
-    if (!apiKey) {
-      this.logger.warn('No se detectó API Key para LLM. Usando clasificación por Mock.');
-      return this.obtenerMock(texto, categorias);
+    if (!categorias.length) {
+      return {
+        categoria: 'General',
+        prioridad: prioridades[0]?.nombre || 'Baja',
+        razon: 'No hay categorías activas configuradas.',
+        confianza: 0,
+        metodo: 'fallback',
+        provider: 'none',
+      };
     }
 
+    const keywordHit = this.clasificarPorKeywords(textoLimpio, categorias);
+
+    if (!iaEnabled || textoLimpio.length < 8) {
+      return keywordHit
+        ? { ...keywordHit, metodo: 'keywords', provider: 'none' }
+        : this.fallbackResult(categorias, prioridades, 'Texto insuficiente o IA deshabilitada.');
+    }
+
+    const aprendizaje = await this.prisma.aprendizajeIa.findMany({
+      where: { corregido: true },
+      orderBy: { fecha: 'desc' },
+      take: APRENDIZAJE_LIMIT,
+    });
+
     try {
-      this.logger.log(`Simulando llamada a LLM para: "${texto.substring(0, 30)}..." con contexto dinámico.`);
-      return this.obtenerMock(texto, categorias);
+      const llm = await this.llamarLlm(
+        textoLimpio,
+        categorias,
+        prioridades.map((p) => p.nombre),
+        aprendizaje.map((a) => ({
+          texto: a.textoReporte,
+          sugerida: a.categoriaSugerida,
+          real: a.categoriaReal,
+        })),
+      );
+
+      if (!llm) {
+        return keywordHit
+          ? { ...keywordHit, metodo: 'keywords', provider: 'none' }
+          : this.fallbackResult(categorias, prioridades, 'LLM no disponible; se usó fallback.');
+      }
+
+      const catMatch = this.matchCategoria(llm.categoria, categorias);
+      const prioMatch = this.matchPrioridad(llm.prioridad, prioridades.map((p) => p.nombre));
+
+      if (keywordHit && catMatch && keywordHit.categoria.toLowerCase() === catMatch.nombre.toLowerCase()) {
+        return {
+          categoria: catMatch.nombre,
+          prioridad: prioMatch,
+          razon: llm.razon,
+          confianza: Math.min(0.95, Math.max(llm.confianza, keywordHit.confianza + 0.1)),
+          metodo: 'hibrido',
+          provider: llm.provider,
+        };
+      }
+
+      return {
+        categoria: catMatch?.nombre || keywordHit?.categoria || categorias[0].nombre,
+        prioridad: prioMatch,
+        razon: llm.razon,
+        confianza: catMatch ? llm.confianza : Math.max(0.35, keywordHit?.confianza ?? 0.3),
+        metodo: keywordHit ? 'hibrido' : 'llm',
+        provider: llm.provider,
+      };
     } catch (error) {
-      this.logger.error('Error en la llamada al LLM:', error);
-      return this.obtenerMock(texto, categorias);
+      this.logger.warn(`Fail-open en clasificarReporte: ${(error as Error).message}`);
+      return keywordHit
+        ? { ...keywordHit, metodo: 'keywords', provider: 'none' }
+        : this.fallbackResult(categorias, prioridades, 'Error/timeout LLM; fallback aplicado.');
     }
   }
 
-  private obtenerMock(texto: string, categorias: any[]) {
-    const t = texto.toLowerCase();
-    
-    // Intentar matchear con categorías reales de la DB
-    if (t.includes('basura') || t.includes('olor') || t.includes('residuo')) {
-      const cat = categorias.find(c => c.nombre.toLowerCase().includes('ambiental')) || categorias[0];
-      return { categoria: cat.nombre, prioridad: 'Media', razon: 'Detectado por palabras clave ambientales.' };
+  private async isClasificacionEnabled(): Promise<boolean> {
+    const flag = await this.prisma.configSistema.findUnique({
+      where: { clave: 'IA_CLASIFICACION_ENABLED' },
+    });
+    if (!flag) return true; // default ON si no está seedado
+    return ['1', 'true', 'yes', 'on'].includes(flag.valor.toLowerCase());
+  }
+
+  /**
+   * Keywords derivadas del nombre/descripción de cada categoría activa.
+   */
+  private clasificarPorKeywords(
+    texto: string,
+    categorias: CategoriaActiva[],
+  ): ClasificacionResultado | null {
+    if (!texto) return null;
+    const t = this.normalize(texto);
+    let best: { cat: CategoriaActiva; score: number; hits: string[] } | null = null;
+
+    for (const cat of categorias) {
+      const tokens = this.tokensFromCategoria(cat);
+      const hits = tokens.filter((tok) => t.includes(tok));
+      if (!hits.length) continue;
+      const score = hits.length / Math.max(tokens.length, 1);
+      if (!best || score > best.score || (score === best.score && hits.length > best.hits.length)) {
+        best = { cat, score, hits };
+      }
     }
-    if (t.includes('bache') || t.includes('pozo') || t.includes('calle') || t.includes('vía')) {
-      const cat = categorias.find(c => c.nombre.toLowerCase().includes('vial')) || categorias[0];
-      return { categoria: cat.nombre, prioridad: 'Alta', razon: 'Detectado por riesgo de accidente vial.' };
+
+    if (!best) return null;
+
+    const prioridad =
+      best.hits.some((h) => ['derrumbe', 'urgente', 'peligro', 'accidente'].includes(h))
+        ? 'Urgente'
+        : best.score >= 0.5
+          ? 'Media'
+          : 'Baja';
+
+    return {
+      categoria: best.cat.nombre,
+      prioridad,
+      razon: `Coincidencia por palabras clave: ${best.hits.slice(0, 4).join(', ')}.`,
+      confianza: Math.min(0.85, 0.45 + best.score * 0.4),
+      metodo: 'keywords',
+      provider: 'none',
+    };
+  }
+
+  private tokensFromCategoria(cat: CategoriaActiva): string[] {
+    const raw = `${cat.nombre} ${cat.descripcion || ''}`;
+    const stop = new Set([
+      'de', 'la', 'el', 'los', 'las', 'en', 'por', 'con', 'del', 'una', 'un', 'y', 'o',
+      'para', 'al', 'se', 'su', 'no', 'a',
+    ]);
+    return this.normalize(raw)
+      .split(/[^a-záéíóúñü0-9]+/)
+      .map((w) => w.trim())
+      .filter((w) => w.length >= 3 && !stop.has(w));
+  }
+
+  private normalize(value: string): string {
+    return value
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '');
+  }
+
+  private async llamarLlm(
+    texto: string,
+    categorias: CategoriaActiva[],
+    prioridades: string[],
+    ejemplos: Array<{ texto: string; sugerida: string; real: string }>,
+  ): Promise<{
+    categoria: string;
+    prioridad: string;
+    razon: string;
+    confianza: number;
+    provider: 'gemini' | 'openai';
+  } | null> {
+    const geminiKey = this.configService.get<string>('GEMINI_API_KEY');
+    const openaiKey = this.configService.get<string>('OPENAI_API_KEY');
+
+    if (!geminiKey && !openaiKey) {
+      this.logger.warn('Sin GEMINI_API_KEY ni OPENAI_API_KEY; se omite LLM.');
+      return null;
     }
-    
-    return { categoria: categorias[0]?.nombre || 'General', prioridad: 'Baja', razon: 'No se detectaron patrones críticos.' };
+
+    const prompt = this.buildPrompt(texto, categorias, prioridades, ejemplos);
+
+    if (geminiKey) {
+      try {
+        return await this.callGemini(geminiKey, prompt);
+      } catch (err) {
+        this.logger.warn(`Gemini falló: ${(err as Error).message}`);
+        if (!openaiKey) throw err;
+      }
+    }
+
+    if (openaiKey) {
+      return await this.callOpenAi(openaiKey, prompt);
+    }
+
+    return null;
+  }
+
+  private buildPrompt(
+    texto: string,
+    categorias: CategoriaActiva[],
+    prioridades: string[],
+    ejemplos: Array<{ texto: string; sugerida: string; real: string }>,
+  ): string {
+    const cats = categorias
+      .map((c) => `- ${c.nombre}${c.descripcion ? `: ${c.descripcion}` : ''}`)
+      .join('\n');
+    const fewShot = ejemplos.length
+      ? ejemplos
+          .map(
+            (e) =>
+              `Texto: "${e.texto.substring(0, 120)}" → Categoría correcta: ${e.real}` +
+              (e.sugerida !== e.real ? ` (antes se sugirió ${e.sugerida})` : ''),
+          )
+          .join('\n')
+      : 'Sin ejemplos previos.';
+
+    return `Eres un clasificador de reportes ciudadanos territoriales.
+Debes responder SOLO un JSON válido con esta forma exacta:
+{"categoria":"<una de la lista>","prioridad":"<una de la lista>","razon":"<breve>","confianza":0.0}
+
+Categorías permitidas:
+${cats}
+
+Prioridades permitidas: ${prioridades.join(', ') || 'Baja, Media, Urgente'}
+
+Ejemplos de correcciones humanas:
+${fewShot}
+
+Texto del reporte a clasificar:
+"""${texto.substring(0, 1500)}"""`;
+  }
+
+  private async callGemini(apiKey: string, prompt: string) {
+    const model =
+      this.configService.get<string>('GEMINI_MODEL') || 'gemini-2.0-flash';
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
+
+    const { data } = await axios.post(
+      url,
+      {
+        contents: [{ parts: [{ text: prompt }] }],
+        generationConfig: {
+          temperature: 0.2,
+          responseMimeType: 'application/json',
+        },
+      },
+      {
+        params: { key: apiKey },
+        timeout: LLM_TIMEOUT_MS,
+      },
+    );
+
+    const raw =
+      data?.candidates?.[0]?.content?.parts?.map((p: any) => p.text).join('') ||
+      '';
+    const parsed = this.parseJsonResponse(raw);
+    return { ...parsed, provider: 'gemini' as const };
+  }
+
+  private async callOpenAi(apiKey: string, prompt: string) {
+    const client = new OpenAI({ apiKey, timeout: LLM_TIMEOUT_MS });
+    const model =
+      this.configService.get<string>('OPENAI_CLASSIFY_MODEL') || 'gpt-4o-mini';
+
+    const completion = await client.chat.completions.create({
+      model,
+      temperature: 0.2,
+      response_format: { type: 'json_object' },
+      messages: [
+        {
+          role: 'system',
+          content:
+            'Clasificas reportes ciudadanos. Respondes únicamente JSON válido.',
+        },
+        { role: 'user', content: prompt },
+      ],
+    });
+
+    const raw = completion.choices[0]?.message?.content || '{}';
+    const parsed = this.parseJsonResponse(raw);
+    return { ...parsed, provider: 'openai' as const };
+  }
+
+  private parseJsonResponse(raw: string): {
+    categoria: string;
+    prioridad: string;
+    razon: string;
+    confianza: number;
+  } {
+    const cleaned = raw.replace(/```json|```/g, '').trim();
+    let parsed: any;
+    try {
+      parsed = JSON.parse(cleaned);
+    } catch {
+      const match = cleaned.match(/\{[\s\S]*\}/);
+      parsed = match ? JSON.parse(match[0]) : {};
+    }
+
+    const confianzaNum = Number(parsed.confianza);
+    return {
+      categoria: String(parsed.categoria || ''),
+      prioridad: String(parsed.prioridad || 'Baja'),
+      razon: String(parsed.razon || 'Clasificación por LLM.'),
+      confianza: Number.isFinite(confianzaNum)
+        ? Math.min(1, Math.max(0, confianzaNum))
+        : 0.6,
+    };
+  }
+
+  private matchCategoria(nombre: string, categorias: CategoriaActiva[]) {
+    const n = this.normalize(nombre);
+    return (
+      categorias.find((c) => this.normalize(c.nombre) === n) ||
+      categorias.find((c) => n.includes(this.normalize(c.nombre)) || this.normalize(c.nombre).includes(n))
+    );
+  }
+
+  private matchPrioridad(nombre: string, prioridades: string[]): string {
+    const n = this.normalize(nombre);
+    const hit = prioridades.find((p) => this.normalize(p) === n);
+    if (hit) return hit;
+    // aliases comunes del LLM
+    if (n.includes('alta') || n.includes('urgent')) {
+      return prioridades.find((p) => /urgent|alta/i.test(p)) || prioridades[prioridades.length - 1];
+    }
+    if (n.includes('media')) {
+      return prioridades.find((p) => /media/i.test(p)) || prioridades[0];
+    }
+    return prioridades.find((p) => /baja/i.test(p)) || prioridades[0] || 'Baja';
+  }
+
+  private fallbackResult(
+    categorias: CategoriaActiva[],
+    prioridades: Array<{ nombre: string }>,
+    razon: string,
+  ): ClasificacionResultado {
+    return {
+      categoria: categorias[0].nombre,
+      prioridad: prioridades.find((p) => /baja/i.test(p.nombre))?.nombre || prioridades[0]?.nombre || 'Baja',
+      razon,
+      confianza: 0.25,
+      metodo: 'fallback',
+      provider: 'none',
+    };
   }
 }

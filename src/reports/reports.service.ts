@@ -2,6 +2,7 @@ import {
   ForbiddenException,
   Injectable,
   Logger,
+  BadRequestException,
   NotFoundException,
 } from '@nestjs/common';
 import { Prisma, Reporte } from '@prisma/client';
@@ -380,36 +381,304 @@ export class ReportsService {
   }
 
   /**
-   * Motor Híbrido de Clasificación de IA Ligera.
+   * Motor híbrido de clasificación: keywords dinámicas + LLM (Gemini/OpenAI) + fallback.
    */
-  async sugerirCategoria(texto: string): Promise<any> {
-    const t = texto.toLowerCase();
-    
-    // 1. Mapeo por palabras clave (Costo cero)
-    const keywordsAmbiental = ["basura", "desmonte", "río", "contaminacion", "residuos"];
-    const keywordsVial = ["piedras", "derrumbe", "vía", "bache", "hueco", "asfalto"];
+  async sugerirCategoria(texto: string): Promise<{
+    categoriaId: string | undefined;
+    categoriaNombre: string | undefined;
+    prioridadId: string | undefined;
+    prioridadNombre: string;
+    prioridadSugerida: string;
+    confianza: number;
+    razon: string;
+    metodo: string;
+    provider?: string;
+  }> {
+    const [categorias, prioridades] = await Promise.all([
+      this.prisma.configCategoria.findMany({ where: { activo: true } }),
+      this.prisma.configPrioridad.findMany({ where: { activo: true } }),
+    ]);
 
-    let sugerenciaNombre = "";
-    if (keywordsAmbiental.some(k => t.includes(k))) sugerenciaNombre = "Ambiental";
-    else if (keywordsVial.some(k => t.includes(k))) sugerenciaNombre = "Vial";
-
-    // 2. Motor de IA (LLM Integration)
-    const categoriasDisponibles = await this.prisma.configCategoria.findMany({ where: { activo: true } });
-    
-    // El LlmService ahora hace su propio fetch dinámico de categorías y estados
     const sugerenciaIA = await this.llmService.clasificarReporte(texto);
-    
-    const cat = categoriasDisponibles.find(c => 
-      c.nombre.toLowerCase() === sugerenciaIA.categoria.toLowerCase()
-    );
 
-    return { 
-      categoriaId: cat?.id || categoriasDisponibles[0]?.id, 
-      nombre: cat?.nombre || categoriasDisponibles[0]?.nombre, 
+    const cat =
+      categorias.find(
+        (c) => c.nombre.toLowerCase() === sugerenciaIA.categoria.toLowerCase(),
+      ) || categorias[0];
+
+    const prio =
+      prioridades.find(
+        (p) => p.nombre.toLowerCase() === sugerenciaIA.prioridad.toLowerCase(),
+      ) ||
+      prioridades.find((p) => /baja/i.test(p.nombre)) ||
+      prioridades[0];
+
+    return {
+      categoriaId: cat?.id,
+      categoriaNombre: cat?.nombre,
+      prioridadId: prio?.id,
+      prioridadNombre: prio?.nombre || sugerenciaIA.prioridad,
       prioridadSugerida: sugerenciaIA.prioridad,
+      confianza: sugerenciaIA.confianza,
       razon: sugerenciaIA.razon,
-      metodo: sugerenciaNombre ? "Híbrido (Keywords + LLM)" : "LLM (OpenAI/Gemini)" 
+      metodo: sugerenciaIA.metodo,
+      provider: sugerenciaIA.provider,
     };
+  }
+
+  /**
+   * Dashboard analítico: KPIs, tiempos de atención (historial),
+   * desglose por categoría/zona y ranking de responsables.
+   */
+  async getAnalytics(from?: string, to?: string): Promise<any> {
+    const toDate = to ? new Date(to) : new Date();
+    const fromDate = from
+      ? new Date(from)
+      : new Date(toDate.getTime() - 30 * 24 * 60 * 60 * 1000);
+
+    if (Number.isNaN(fromDate.getTime()) || Number.isNaN(toDate.getTime())) {
+      throw new BadRequestException('Parámetros from/to inválidos (usar ISO-8601)');
+    }
+
+    const periodoFilter = {
+      fechaCreacion: { gte: fromDate, lte: toDate },
+    };
+
+    const [reportes, estados] = await Promise.all([
+      this.prisma.reporte.findMany({
+        where: periodoFilter,
+        include: {
+          categoria: true,
+          estado: true,
+          prioridad: true,
+          historial: {
+            include: {
+              estadoNuevo: true,
+              usuario: {
+                select: {
+                  id: true,
+                  email: true,
+                  rol: { select: { nombre: true } },
+                },
+              },
+            },
+            orderBy: { fecha: 'asc' },
+          },
+        },
+      }),
+      this.prisma.configEstado.findMany(),
+    ]);
+
+    const countByEstadoNombre = (nombre: string) =>
+      reportes.filter(
+        (r) => r.estado.nombre.toLowerCase() === nombre.toLowerCase(),
+      ).length;
+
+    const tiemposHoras: number[] = [];
+    for (const r of reportes) {
+      const horas = this.calcularTiempoAtencionHoras(r);
+      if (horas != null) tiemposHoras.push(horas);
+    }
+
+    const porCategoriaMap = new Map<
+      string,
+      { categoriaId: string; nombre: string; total: number; abiertos: number }
+    >();
+    for (const r of reportes) {
+      const key = r.categoriaId;
+      const entry = porCategoriaMap.get(key) || {
+        categoriaId: r.categoriaId,
+        nombre: r.categoria.nombre,
+        total: 0,
+        abiertos: 0,
+      };
+      entry.total += 1;
+      if (!r.estado.esFinal) entry.abiertos += 1;
+      porCategoriaMap.set(key, entry);
+    }
+
+    const porZonaMap = new Map<
+      string,
+      {
+        zona: string;
+        total: number;
+        abiertos: number;
+        sumaNivel: number;
+      }
+    >();
+    for (const r of reportes) {
+      const zona = r.zona?.trim() || 'Sin zona';
+      const entry = porZonaMap.get(zona) || {
+        zona,
+        total: 0,
+        abiertos: 0,
+        sumaNivel: 0,
+      };
+      entry.total += 1;
+      if (!r.estado.esFinal) entry.abiertos += 1;
+      entry.sumaNivel += r.prioridad?.nivel || 1;
+      porZonaMap.set(zona, entry);
+    }
+
+    const rankingMap = new Map<
+      string,
+      {
+        usuarioId: string;
+        email: string;
+        resueltos: number;
+        reaperturas: number;
+        sumaHoras: number;
+        nTiempos: number;
+      }
+    >();
+
+    for (const r of reportes) {
+      for (const h of r.historial) {
+        const rolNombre =
+          typeof h.usuario?.rol === 'object'
+            ? (h.usuario.rol as any)?.nombre
+            : undefined;
+        if (!h.usuarioId || !h.usuario) continue;
+        if (rolNombre !== 'RESPONSABLE' && rolNombre !== 'SUPERVISOR') continue;
+
+        const entry = rankingMap.get(h.usuarioId) || {
+          usuarioId: h.usuarioId,
+          email: h.usuario.email,
+          resueltos: 0,
+          reaperturas: 0,
+          sumaHoras: 0,
+          nTiempos: 0,
+        };
+
+        const esReapertura =
+          h.estadoNuevo.nombre.toLowerCase() === 'reabierto' ||
+          (h.comentario || '').toUpperCase().startsWith('REAPERTURA');
+
+        if (esReapertura) {
+          entry.reaperturas += 1;
+        } else if (h.estadoNuevo.esFinal) {
+          entry.resueltos += 1;
+          const horas =
+            (h.fecha.getTime() - r.fechaCreacion.getTime()) / (1000 * 60 * 60);
+          if (horas >= 0) {
+            entry.sumaHoras += horas;
+            entry.nTiempos += 1;
+          }
+        }
+
+        rankingMap.set(h.usuarioId, entry);
+      }
+    }
+
+    const tendenciaMap = new Map<string, number>();
+    for (const r of reportes) {
+      const day = r.fechaCreacion.toISOString().slice(0, 10);
+      tendenciaMap.set(day, (tendenciaMap.get(day) || 0) + 1);
+    }
+
+    const tendenciaDiaria = Array.from(tendenciaMap.entries())
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([fecha, total]) => ({ fecha, total }));
+
+    return {
+      periodo: {
+        from: fromDate.toISOString(),
+        to: toDate.toISOString(),
+      },
+      kpis: {
+        total: reportes.length,
+        pendientes: countByEstadoNombre('Pendiente'),
+        enProceso: countByEstadoNombre('En Proceso'),
+        solucionados: countByEstadoNombre('Solucionado'),
+        reabiertos: countByEstadoNombre('Reabierto'),
+        tiempoAtencion: {
+          promedioHoras: this.avg(tiemposHoras),
+          medianaHoras: this.percentile(tiemposHoras, 0.5),
+          p90Horas: this.percentile(tiemposHoras, 0.9),
+          nMuestra: tiemposHoras.length,
+        },
+      },
+      porCategoria: Array.from(porCategoriaMap.values()).sort(
+        (a, b) => b.total - a.total,
+      ),
+      porZona: Array.from(porZonaMap.values())
+        .map((z) => ({
+          zona: z.zona,
+          total: z.total,
+          abiertos: z.abiertos,
+          indiceRiesgoPromedio: Number((z.sumaNivel / z.total).toFixed(2)),
+        }))
+        .sort((a, b) => b.total - a.total),
+      rankingResponsables: Array.from(rankingMap.values())
+        .map((r) => ({
+          usuarioId: r.usuarioId,
+          email: r.email,
+          resueltos: r.resueltos,
+          reaperturas: r.reaperturas,
+          tiempoMedioHoras:
+            r.nTiempos > 0
+              ? Number((r.sumaHoras / r.nTiempos).toFixed(2))
+              : null,
+        }))
+        .sort((a, b) => b.resueltos - a.resueltos || a.reaperturas - b.reaperturas),
+      tendenciaDiaria,
+      // metadata útil para UI
+      estadosDisponibles: estados.map((e) => ({
+        id: e.id,
+        nombre: e.nombre,
+        esFinal: e.esFinal,
+      })),
+    };
+  }
+
+  /**
+   * Tiempo hasta la última resolución final posterior a la última reapertura.
+   */
+  private calcularTiempoAtencionHoras(reporte: {
+    fechaCreacion: Date;
+    historial: Array<{
+      fecha: Date;
+      comentario: string | null;
+      estadoNuevo: { nombre: string; esFinal: boolean };
+    }>;
+  }): number | null {
+    const events = reporte.historial;
+    if (!events.length) return null;
+
+    let lastReopenIdx = -1;
+    for (let i = 0; i < events.length; i++) {
+      const h = events[i];
+      const isReopen =
+        h.estadoNuevo.nombre.toLowerCase() === 'reabierto' ||
+        (h.comentario || '').toUpperCase().startsWith('REAPERTURA');
+      if (isReopen) lastReopenIdx = i;
+    }
+
+    const slice = events.slice(lastReopenIdx + 1);
+    const cierre = slice.find((h) => h.estadoNuevo.esFinal);
+    if (!cierre) return null;
+
+    const horas =
+      (cierre.fecha.getTime() - reporte.fechaCreacion.getTime()) /
+      (1000 * 60 * 60);
+    return horas >= 0 ? Number(horas.toFixed(2)) : null;
+  }
+
+  private avg(values: number[]): number | null {
+    if (!values.length) return null;
+    return Number(
+      (values.reduce((a, b) => a + b, 0) / values.length).toFixed(2),
+    );
+  }
+
+  private percentile(values: number[], p: number): number | null {
+    if (!values.length) return null;
+    const sorted = [...values].sort((a, b) => a - b);
+    const idx = Math.min(
+      sorted.length - 1,
+      Math.max(0, Math.ceil(p * sorted.length) - 1),
+    );
+    return Number(sorted[idx].toFixed(2));
   }
 
   async getStats(): Promise<any> {
