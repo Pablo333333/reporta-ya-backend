@@ -1,98 +1,101 @@
-<p align="center">
-  <a href="http://nestjs.com/" target="blank"><img src="https://nestjs.com/img/logo-small.svg" width="120" alt="Nest Logo" /></a>
-</p>
+# Reporta Ya — Backend
 
-[circleci-image]: https://img.shields.io/circleci/build/github/nestjs/nest/master?token=abc123def456
-[circleci-url]: https://circleci.com/gh/nestjs/nest
+API for **Reporta Ya**, a territorial incident platform. Citizens report problems on roads and the environment (rocks, landslides, blocked traffic, river pollution, dust, waste). Operators resolve those cases, and supervisors configure how the territory works.
 
-  <p align="center">A progressive <a href="http://nodejs.org" target="_blank">Node.js</a> framework for building efficient and scalable server-side applications.</p>
-    <p align="center">
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/v/@nestjs/core.svg" alt="NPM Version" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/l/@nestjs/core.svg" alt="Package License" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/dm/@nestjs/common.svg" alt="NPM Downloads" /></a>
-<a href="https://circleci.com/gh/nestjs/nest" target="_blank"><img src="https://img.shields.io/circleci/build/github/nestjs/nest/master" alt="CircleCI" /></a>
-<a href="https://discord.gg/G7Qnnhy" target="_blank"><img src="https://img.shields.io/badge/discord-online-brightgreen.svg" alt="Discord"/></a>
-<a href="https://opencollective.com/nest#backer" target="_blank"><img src="https://opencollective.com/nest/backers/badge.svg" alt="Backers on Open Collective" /></a>
-<a href="https://opencollective.com/nest#sponsor" target="_blank"><img src="https://opencollective.com/nest/sponsors/badge.svg" alt="Sponsors on Open Collective" /></a>
-  <a href="https://paypal.me/kamilmysliwiec" target="_blank"><img src="https://img.shields.io/badge/Donate-PayPal-ff3f59.svg" alt="Donate us"/></a>
-    <a href="https://opencollective.com/nest#sponsor"  target="_blank"><img src="https://img.shields.io/badge/Support%20us-Open%20Collective-41B883.svg" alt="Support us"></a>
-  <a href="https://twitter.com/nestframework" target="_blank"><img src="https://img.shields.io/twitter/follow/nestframework.svg?style=social&label=Follow" alt="Follow us on Twitter"></a>
-</p>
-  <!--[![Backers on Open Collective](https://opencollective.com/nest/backers/badge.svg)](https://opencollective.com/nest#backer)
-  [![Sponsors on Open Collective](https://opencollective.com/nest/sponsors/badge.svg)](https://opencollective.com/nest#sponsor)-->
+This service is the source of truth for the business rules. The mobile app and the admin panel only present them.
 
-## Description
+## What the platform does
 
-[Nest](https://github.com/nestjs/nest) framework TypeScript starter repository.
+A report is a geolocated incident: category, priority, status, coordinates, optional zone, photo, voice note, and extra fields defined by the territory. Anyone can file one. Logged-in citizens also earn points and later confirm whether the fix actually worked.
 
-## Project setup
+Data is isolated by **territory**. Every request runs inside a tenant context taken from the `x-territorio-id` header, then the JWT, then the default territory.
 
-```bash
-$ npm install
+## Roles
+
+| Role | Who they are | What they can do |
+| --- | --- | --- |
+| **REPORTANTE** | Citizen | Create reports, see their own cases, confirm or reject a solution, appear on the ranking. |
+| **RESPONSABLE** | Field operator | Move cases through the workflow, attach resolution evidence, publish announcements, read analytics. |
+| **SUPERVISOR** | Administrator | Everything an operator can do, plus catalog, form fields, roles, system settings, and audit. |
+
+Permissions are stored in the database (`can_view_reports`, `can_create_reports`, `can_edit_reports`, `can_manage_users`, `can_manage_config`) and assigned to roles. Guests (no token) can still create and list reports; they do not earn points and are not attached as the reporter.
+
+## Report lifecycle
+
+1. The case is created in **Pendiente** unless a status is sent explicitly.
+2. A photo and an optional voice note can be attached. Voice is transcribed and stored as text.
+3. If the citizen or the operator later changes the category the classifier suggested, that correction is saved so future suggestions improve.
+4. An operator (**RESPONSABLE** or **SUPERVISOR**) of the same territory moves the status. Some statuses require a resolution photo before they can be applied.
+5. Marking the case **Solucionado** (or any final status) clears citizen confirmation and asks the reporter to validate the fix.
+6. If the citizen **confirms**, the case stays closed and they receive validation points.
+7. If the citizen **rejects**, the case returns to **Pendiente** and the history records a citizen reopening.
+
+Default statuses: Pendiente → En Proceso → Solucionado, plus Reabierto. Statuses, colors, order, and whether a photo is required are configurable.
+
+Open cases older than the SLA limit (default **48 hours**, key `SLA_HORAS_LIMITE`) are flagged as breached. Operators and supervisors with a push token are notified once. The check runs every 15 minutes and can also be triggered manually.
+
+## Critical events
+
+When a new report arrives, the API counts other **open** reports in the same **zone** and **category** inside a time window.
+
+- Minimum count: `EVENTO_CRITICO_MIN_REPORTES` (default 2, not counting the new report).
+- Window: `EVENTO_CRITICO_VENTANA_HORAS` (default 48).
+
+If the threshold is met, the new report is forced to priority **Urgente**, the history is marked as a critical event, and operators receive a push plus an instant-message alert. A non-critical report whose priority level is 3 or higher still raises an urgent alert.
+
+## Territorial risk index
+
+Each open report gets a risk score used to order the operator queue:
+
+```
+risk = (priority level × PESO_GRAVEDAD) + (open similar cases in 7 days × PESO_FRECUENCIA)
 ```
 
-## Compile and run the project
+Defaults are **0.6** for severity and **0.4** for frequency, so a single severe incident outranks a pile of minor repeats. “Similar” means the same zone and category, still not in a final status. The prioritized list returns the highest scores first.
 
-```bash
-# development
-$ npm run start
+## Citizen points
 
-# watch mode
-$ npm run start:dev
+Only users with role **REPORTANTE** earn points.
 
-# production mode
-$ npm run start:prod
-```
+| Action | Config key | Default |
+| --- | --- | --- |
+| Creating a report | `PUNTOS_CREAR_REPORTE` | 5 |
+| Confirming that a solution worked | `PUNTOS_VALIDAR_SOLUCION` | 15 |
 
-## Run tests
+The ranking sums those points. A score of 0 disables that reward.
 
-```bash
-# unit tests
-$ npm run test
+## Classification
 
-# e2e tests
-$ npm run test:e2e
+Category and priority can be suggested from free text before the report is saved.
 
-# test coverage
-$ npm run test:cov
-```
+1. Match keywords taken from the active category catalog.
+2. If AI is enabled (`IA_CLASIFICACION_ENABLED`) and the text is long enough, ask the language model, including recent human corrections.
+3. If the model is off, times out, or fails, keep the keyword match or the first active category.
 
-## Deployment
+Agreement between keywords and the model raises confidence. A citizen who picks a different category than the one suggested, or an operator who recategorizes a case, writes a correction used on later calls.
 
-When you're ready to deploy your NestJS application to production, there are some key steps you can take to ensure it runs as efficiently as possible. Check out the [deployment documentation](https://docs.nestjs.com/deployment) for more information.
+## Announcements
 
-If you are looking for a cloud-based platform to deploy your NestJS application, check out [Mau](https://mau.nestjs.com), our official platform for deploying NestJS applications on AWS. Mau makes deployment straightforward and fast, requiring just a few simple steps:
+Operators (**RESPONSABLE**) publish announcements: a message, optional zone, map point, radius in meters, and a restriction duration. Every user with a push token is notified. Supervisors can read announcements; publishing is limited to operators.
 
-```bash
-$ npm install -g @nestjs/mau
-$ mau deploy
-```
+## What gets audited
 
-With Mau, you can deploy your application in just a few clicks, allowing you to focus on building features rather than managing infrastructure.
+Status changes are stored on the report history (who, from which status, to which status, comment). Sensitive actions (create report, change status, validate a solution, edit configuration) are also written to the action log.
 
-## Resources
+## Configurable rules
 
-Check out a few resources that may come in handy when working with NestJS:
+Supervisors change these without a deploy. They live in system config and drive the behavior above:
 
-- Visit the [NestJS Documentation](https://docs.nestjs.com) to learn more about the framework.
-- For questions and support, please visit our [Discord channel](https://discord.gg/G7Qnnhy).
-- To dive deeper and get more hands-on experience, check out our official video [courses](https://courses.nestjs.com/).
-- Deploy your application to AWS with the help of [NestJS Mau](https://mau.nestjs.com) in just a few clicks.
-- Visualize your application graph and interact with the NestJS application in real-time using [NestJS Devtools](https://devtools.nestjs.com).
-- Need help with your project (part-time to full-time)? Check out our official [enterprise support](https://enterprise.nestjs.com).
-- To stay in the loop and get updates, follow us on [X](https://x.com/nestframework) and [LinkedIn](https://linkedin.com/company/nestjs).
-- Looking for a job, or have a job to offer? Check out our official [Jobs board](https://jobs.nestjs.com).
+- App name, slogan, primary color
+- Risk weights (`PESO_GRAVEDAD`, `PESO_FRECUENCIA`)
+- Critical-event threshold and window
+- Point values
+- SLA hours
+- AI classification on/off
+- Automatic message templates (new report, critical event, high priority, announcement, citizen validation, SLA breach)
 
-## Support
+Categories, extra form fields, statuses, and priorities are also data, scoped to a territory.
 
-Nest is an MIT-licensed open source project. It can grow thanks to the sponsors and support by the amazing backers. If you'd like to join them, please [read more here](https://docs.nestjs.com/support).
+## Stack
 
-## Stay in touch
-
-- Author - [Kamil Myśliwiec](https://twitter.com/kammysliwiec)
-- Website - [https://nestjs.com](https://nestjs.com/)
-- Twitter - [@nestframework](https://twitter.com/nestframework)
-
-## License
-
-Nest is [MIT licensed](https://github.com/nestjs/nest/blob/master/LICENSE).
+NestJS, PostgreSQL, Prisma, JWT, push notifications, mail, and object storage for photos and audio.
